@@ -9,38 +9,71 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include "message.h"
 
 #define BACKLOG 10
-#define MAXDATASIZE 1000
+
+int open_listenfd(char *port);
 
 int main (int argc, char *argv[]) {
-	int listenfd, connfd;
-	struct addrinfo hints, *servinfo, *p;
+	int listenfd, connfd, numbytes;
 	struct sockaddr_storage clientaddr;
 	socklen_t clientlen;
-	int gai, yes=1;
 
 	if (argc != 3) {
 		fprintf(stderr, "usage: %s -p <port>\n", argv[0]);
 		return argc;
 	}
 
+	listenfd = open_listenfd(argv[2]);
+
+	while(1) {
+		clientlen = sizeof(struct sockaddr_storage);
+		connfd = accept(listenfd, (struct sockaddr *)&clientaddr, &clientlen);
+		if (connfd == -1) {
+			continue;
+		}
+
+		if (!fork()) {
+			struct message msg;
+			if ((numbytes = recv(connfd, &msg, MAXDATASIZE+63, 0)) == -1) {
+				perror("recv");
+				exit(1);
+			}
+
+			printf("server: received '%s'\n", msg.data);
+			msg.data[0] += 1;
+			send(connfd, &msg, msg.length, 0);
+			
+			close(connfd);
+			exit(0);
+		}
+		close(connfd);
+	}
+
+	return 0;
+}
+
+int open_listenfd(char *port) {
+	struct addrinfo hints, *listp, *p;
+	int listenfd, optval=1, gai;
+
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
-	if ((gai = getaddrinfo(NULL, argv[2], &hints, &servinfo)) != 0) {
+	if ((gai = getaddrinfo(NULL, port, &hints, &listp)) != 0) {
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(gai));
-		return argc;
+		return 1;
 	}
 
-	for (p = servinfo; p != NULL; p = p->ai_next) {
+	for (p = listp; p != NULL; p = p->ai_next) {
 		if ((listenfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
 			continue;
 		}
 
-		if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+		if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(int)) == -1) {
 			perror("setsockopt");
 			exit(1);
 		}
@@ -53,7 +86,7 @@ int main (int argc, char *argv[]) {
 		break;
 	}
 
-	freeaddrinfo(servinfo);
+	freeaddrinfo(listp);
 
 	if (p == NULL) {
 		fprintf(stderr, "server: failed to bind\n");
@@ -65,21 +98,5 @@ int main (int argc, char *argv[]) {
 		exit(1);
 	}
 
-	while(1) {
-		clientlen = sizeof(struct sockaddr_storage);
-		connfd = accept(listenfd, (struct sockaddr *)&clientaddr, &clientlen);
-		if (connfd == -1) {
-			continue;
-		}
-
-		if (!fork()) {
-			if (send(connfd, "Hello, world!", 13, 0) != -1)
-				perror("sent");
-			close(connfd);
-			exit(0);
-		}
-		close(connfd);
-	}
-
-	return 0;
+	return listenfd;
 }
