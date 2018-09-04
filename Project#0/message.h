@@ -1,6 +1,6 @@
 #include <stdint.h>
 
-#define MAXDATASIZE 1000
+#define MAXDATASIZE 10000000
 
 struct message {
 	uint8_t 	op;									/* 0: encrypt, 1: decrypt */

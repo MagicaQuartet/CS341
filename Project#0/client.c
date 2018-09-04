@@ -14,7 +14,7 @@ int open_clientfd(char *hostname, char *port);
 
 int main (int argc, char *argv[]) {
 	int clientfd, numbytes;
-	struct message msg;
+	struct message *msg, *buf;
 	
 	if (argc != 9) {
 		fprintf(stderr, "usage: %s -h <host> -p <port> -o <operation> -s <shift>\n", argv[0]);
@@ -26,31 +26,35 @@ int main (int argc, char *argv[]) {
 		exit(1);
 	}
 
-	memset(&msg, 0, sizeof(msg));
-	while (fgets(msg.data, MAXDATASIZE, stdin) != NULL) {
-		msg.op = (uint8_t)atoi(argv[6]);
-		msg.shift = (uint8_t)atoi(argv[8]);
-		msg.checksum = 0x00;
+	msg = (struct message *)calloc(1, sizeof(struct message));
+	buf = (struct message *)calloc(1, sizeof(struct message));
+	memset(msg, 0, sizeof(struct message));
+	while (fgets(msg->data, MAXDATASIZE, stdin) != NULL) {
+		msg->op = (uint8_t)atoi(argv[6]);
+		msg->shift = (uint8_t)atoi(argv[8]);
+		msg->checksum = 0x00;
 		
-		if (msg.data[strlen(msg.data)-1] == '\n')
-			msg.data[strlen(msg.data)-1] = '\0';
+		if (msg->data[strlen(msg->data)-1] == '\n')
+			msg->data[strlen(msg->data)-1] = '\0';
 
-		msg.length = 64 + strlen(msg.data);
+		msg->length = htonl(64 + strlen(msg->data));
 
-		send(clientfd, &msg, msg.length, 0);
-		if ((numbytes = recv(clientfd, &msg, MAXDATASIZE+63, 0)) == -1) {
+		send(clientfd, msg, ntohl(msg->length), 0);
+		if ((numbytes = recv(clientfd, buf, MAXDATASIZE+63, 0)) == -1) {
 			perror("recv");
 			exit(1);
 		}
+		printf("read: %dbytes\n", numbytes);
+		buf->data[numbytes] = '\0';
+		printf("client: received '%s'\n", buf->data);
 
-		msg.data[numbytes] = '\0';
-		printf("client: received '%s'\n", msg.data);
-
-		memset(&msg, 0, sizeof(msg));
-		break;
+		memset(msg, 0, sizeof(struct message));
+		memset(buf, 0, sizeof(struct message));
 	}
 
 	close(clientfd);
+	free(msg);
+	free(buf);
 
 	return 0;	
 }
