@@ -15,6 +15,7 @@
 #define BACKLOG 10
 
 int open_listenfd(char *port);
+int check_valid(struct message *msg);
 void encrypt(char *str, uint8_t shift);
 void decrypt(char *str, uint8_t shift);
 
@@ -40,19 +41,23 @@ int main (int argc, char *argv[]) {
 		if (!fork()) {
 			struct message *msg;
 			msg = (struct message *)calloc(1, sizeof(struct message));
-			if ((numbytes = recv(connfd, msg, MAXDATASIZE+63, 0)) == -1) {
+			if ((numbytes = read(connfd, msg, MAXDATASIZE+8)) == -1) {
 				perror("recv");
 				exit(1);
 			}
 
-			printf("server: received '%s'\n", msg->data);
+			if (check_valid(msg)) {
+				close(connfd);
+				free(msg);
+				exit(0);
+			}
+
+			//printf("server: received '%s'\n", msg->data);
 			if (msg->op == 0)
 				encrypt(msg->data, msg->shift);
 			else if (msg->op == 1)
 				decrypt(msg->data, msg->shift);
-			else
-				fprintf(stderr, "op - 0: encrypt, 1: decrypt\n");
-			send(connfd, msg, msg->length, 0);
+			write(connfd, msg, ntohl(msg->length));
 			
 			close(connfd);
 			free(msg);
@@ -109,6 +114,16 @@ int open_listenfd(char *port) {
 	}
 
 	return listenfd;
+}
+
+int check_valid(struct message *msg) {
+	if (msg->op != 0 && msg->op != 1)
+		return -1;
+
+	if (ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE)
+		return -1;
+
+	return 0;
 }
 
 void encrypt(char *str, uint8_t shift) {

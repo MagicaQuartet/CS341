@@ -3,3 +3,4 @@
 *.swp
 client
 server
+test_*

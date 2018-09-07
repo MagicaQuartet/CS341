@@ -8,13 +8,18 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
 #include "message.h"
 
 int open_clientfd(char *hostname, char *port);
+uint16_t calculate_checksum(uint16_t *p, int cnt);
 
 int main (int argc, char *argv[]) {
-	int clientfd, numbytes;
+	int clientfd, numbytes, pos;
+	long long readbytes;
 	struct message *msg, *buf;
+	char c;
+	char buffer[1024];
 	
 	if (argc != 9) {
 		fprintf(stderr, "usage: %s -h <host> -p <port> -o <operation> -s <shift>\n", argv[0]);
@@ -29,29 +34,48 @@ int main (int argc, char *argv[]) {
 	msg = (struct message *)calloc(1, sizeof(struct message));
 	buf = (struct message *)calloc(1, sizeof(struct message));
 	memset(msg, 0, sizeof(struct message));
-	while (fgets(msg->data, MAXDATASIZE, stdin) != NULL) {
-		msg->op = (uint8_t)atoi(argv[6]);
-		msg->shift = (uint8_t)atoi(argv[8]);
+	msg->op = (uint8_t)atoi(argv[6]);
+	msg->shift = (uint8_t)atoi(argv[8]);
+
+	while (1) {
+		fflush(stdout);
+		pos = 0;
 		msg->checksum = 0x00;
-		
-		if (msg->data[strlen(msg->data)-1] == '\n')
-			msg->data[strlen(msg->data)-1] = '\0';
 
-		msg->length = htonl(64 + strlen(msg->data));
+		while ((c=getchar()) != EOF) {
+			if (c == '\n')
+				break;
 
-		send(clientfd, msg, ntohl(msg->length), 0);
-		if ((numbytes = recv(clientfd, buf, MAXDATASIZE+63, 0)) == -1) {
-			perror("recv");
-			exit(1);
+			msg->data[pos] = c;
+			pos++;
+			if (pos >= MAXDATASIZE - 8)
+				break;
+		}	
+		msg->length = htonl(pos + 8);
+		//msg->checksum = calculate_checksum((uint16_t *)msg, (sizeof(struct message)-1) / sizeof(uint16_t));
+
+		write(clientfd, msg, pos + 8);
+		readbytes = 0;
+		while (1) {
+			numbytes = read(clientfd, buffer, 1024);
+			if (numbytes == -1) {
+				perror("read");
+				exit(1);
+			}
+
+			memcpy(((void *)buf)+readbytes, buffer, numbytes);
+			readbytes += numbytes;
+			if (readbytes >= pos + 8)
+				break;
+			memset(buffer, 0, 1024);
 		}
-		printf("read: %dbytes\n", numbytes);
-		buf->data[numbytes] = '\0';
-		printf("client: received '%s'\n", buf->data);
 
-		memset(msg, 0, sizeof(struct message));
-		memset(buf, 0, sizeof(struct message));
+		printf("%s", buf->data);
+		if (c == EOF)
+			break;
+		memset(msg->data, 0, MAXDATASIZE-7);
+		memset(buf->data, 0, MAXDATASIZE-7);
 	}
-
 	close(clientfd);
 	free(msg);
 	free(buf);
@@ -94,4 +118,20 @@ int open_clientfd(char *hostname, char *port) {
 	else {
 		return clientfd;
 	}
+}
+
+uint16_t calculate_checksum(uint16_t *p, int cnt) {
+	uint32_t checksum = 0;
+	int i;
+
+	for (i = 0; i < cnt; i++) {
+		checksum = *p;
+		p++;
+	}
+
+	checksum = (checksum >> 16) + (checksum & 0xffff);
+	checksum += (checksum >> 16);
+	checksum = ~checksum;
+
+	return (uint16_t)checksum;
 }

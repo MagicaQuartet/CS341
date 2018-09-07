@@ -7,5 +7,5 @@ struct message {
 	uint8_t 	shift;							/* # of shifts */
 	uint16_t 	checksum;						/* TCP checksum */
 	uint32_t 	length;							/* total length of message */
-	char 			data[MAXDATASIZE];	
+	char 			data[MAXDATASIZE-7];	
 };
