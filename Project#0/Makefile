@@ -13,4 +13,4 @@ server.o : server.c
 	gcc -c -o server.o server.c
 
 clean : 
-	rm *.o client server
+	rm test* *.o client server

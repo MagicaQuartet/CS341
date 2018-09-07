@@ -38,9 +38,7 @@ int main (int argc, char *argv[]) {
 	msg->shift = (uint8_t)atoi(argv[8]);
 
 	while (1) {
-		fflush(stdout);
 		pos = 0;
-		msg->checksum = 0x00;
 
 		while ((c=getchar()) != EOF) {
 			if (c == '\n')
@@ -50,10 +48,10 @@ int main (int argc, char *argv[]) {
 			pos++;
 			if (pos >= MAXDATASIZE - 8)
 				break;
-		}	
+		}
 		if (pos > 0) {
 			msg->length = htonl(pos + 8);
-			msg->checksum = calculate_checksum((uint16_t *)msg, (sizeof(struct message)-1) / sizeof(uint16_t));
+			msg->checksum = calculate_checksum((uint16_t *)msg, MAXDATASIZE / sizeof(uint16_t));
 	
 			write(clientfd, msg, pos + 8);
 			readbytes = 0;
@@ -63,7 +61,6 @@ int main (int argc, char *argv[]) {
 					perror("read");
 					exit(1);
 				}
-	
 				memcpy(((void *)buf)+readbytes, buffer, numbytes);
 				readbytes += numbytes;
 				if (readbytes == 0 || readbytes >= pos + 8)
@@ -72,11 +69,13 @@ int main (int argc, char *argv[]) {
 			}
 	
 			printf("%s", buf->data);
+			fflush(stdout);
 		}
 		if (c == EOF)
 			break;
 		memset(msg->data, 0, MAXDATASIZE-7);
 		memset(buf->data, 0, MAXDATASIZE-7);
+		msg->checksum = 0x00;
 	}
 	close(clientfd);
 	free(msg);
@@ -127,12 +126,12 @@ uint16_t calculate_checksum(uint16_t *p, int cnt) {
 	int i;
 
 	for (i = 0; i < cnt; i++) {
-		checksum = *p;
+		checksum += *p;
 		p++;
+		while (checksum >> 16)
+			checksum = (checksum >> 16) + (checksum & 0xffff);
 	}
 
-	checksum = (checksum >> 16) + (checksum & 0xffff);
-	checksum += (checksum >> 16);
 	checksum = ~checksum;
 
 	return (uint16_t)checksum;
