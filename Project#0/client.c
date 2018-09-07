@@ -51,26 +51,28 @@ int main (int argc, char *argv[]) {
 			if (pos >= MAXDATASIZE - 8)
 				break;
 		}	
-		msg->length = htonl(pos + 8);
-		//msg->checksum = calculate_checksum((uint16_t *)msg, (sizeof(struct message)-1) / sizeof(uint16_t));
-
-		write(clientfd, msg, pos + 8);
-		readbytes = 0;
-		while (1) {
-			numbytes = read(clientfd, buffer, 1024);
-			if (numbytes == -1) {
-				perror("read");
-				exit(1);
+		if (pos > 0) {
+			msg->length = htonl(pos + 8);
+			msg->checksum = calculate_checksum((uint16_t *)msg, (sizeof(struct message)-1) / sizeof(uint16_t));
+	
+			write(clientfd, msg, pos + 8);
+			readbytes = 0;
+			while (1) {
+				numbytes = read(clientfd, buffer, 1024);
+				if (numbytes == -1) {
+					perror("read");
+					exit(1);
+				}
+	
+				memcpy(((void *)buf)+readbytes, buffer, numbytes);
+				readbytes += numbytes;
+				if (readbytes == 0 || readbytes >= pos + 8)
+					break;
+				memset(buffer, 0, 1024);
 			}
-
-			memcpy(((void *)buf)+readbytes, buffer, numbytes);
-			readbytes += numbytes;
-			if (readbytes >= pos + 8)
-				break;
-			memset(buffer, 0, 1024);
+	
+			printf("%s", buf->data);
 		}
-
-		printf("%s", buf->data);
 		if (c == EOF)
 			break;
 		memset(msg->data, 0, MAXDATASIZE-7);
