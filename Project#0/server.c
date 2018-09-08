@@ -52,7 +52,6 @@ int main (int argc, char *argv[]) {
 				exit(0);
 			}
 
-			//printf("server: received '%s'\n", msg->data);
 			if (msg->op == 0)
 				encrypt(msg->data, msg->shift);
 			else if (msg->op == 1)
@@ -117,10 +116,23 @@ int open_listenfd(char *port) {
 }
 
 int check_valid(struct message *msg) {
+	uint32_t sum = 0;
+	uint16_t *p = (uint16_t *)msg;
+	
 	if (msg->op != 0 && msg->op != 1)
 		return -1;
 
 	if (ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE)
+		return -1;
+
+	for (int i = 0; i < MAXDATASIZE / sizeof(uint16_t); i++) {
+		sum += *p;
+		p++;
+		while (sum >> 16)
+			sum = (sum >> 16) + (sum & 0xffff);
+	}
+
+	if(sum+1 & 0xffff)
 		return -1;
 
 	return 0;

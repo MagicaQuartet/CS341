@@ -12,7 +12,7 @@
 #include "message.h"
 
 int open_clientfd(char *hostname, char *port);
-uint16_t calculate_checksum(uint16_t *p, int cnt);
+uint16_t calculate_checksum(uint16_t *p);
 
 int main (int argc, char *argv[]) {
 	int clientfd, numbytes, pos;
@@ -51,7 +51,7 @@ int main (int argc, char *argv[]) {
 		}
 		if (pos > 0) {
 			msg->length = htonl(pos + 8);
-			msg->checksum = calculate_checksum((uint16_t *)msg, MAXDATASIZE / sizeof(uint16_t));
+			msg->checksum = calculate_checksum((uint16_t *)msg);
 	
 			write(clientfd, msg, pos + 8);
 			readbytes = 0;
@@ -121,11 +121,11 @@ int open_clientfd(char *hostname, char *port) {
 	}
 }
 
-uint16_t calculate_checksum(uint16_t *p, int cnt) {
+uint16_t calculate_checksum(uint16_t *p) {
 	uint32_t checksum = 0;
 	int i;
 
-	for (i = 0; i < cnt; i++) {
+	for (i = 0; i < MAXDATASIZE / sizeof(uint16_t); i++) {
 		checksum += *p;
 		p++;
 		while (checksum >> 16)
