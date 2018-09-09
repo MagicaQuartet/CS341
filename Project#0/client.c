@@ -56,6 +56,7 @@ int main (int argc, char *argv[]) {
 			write(clientfd, msg, pos + 8);
 			readbytes = 0;
 			while (1) {
+				memset(buffer, 0, 1024);
 				numbytes = read(clientfd, buffer, 1024);
 				if (numbytes == -1) {
 					perror("read");
@@ -65,13 +66,15 @@ int main (int argc, char *argv[]) {
 				readbytes += numbytes;
 				if (readbytes == 0 || readbytes >= pos + 8)
 					break;
-				memset(buffer, 0, 1024);
 			}
+
+			if (pos + 8 != readbytes)
+				break;
 	
 			printf("%s", buf->data);
 			fflush(stdout);
 		}
-		if (c == EOF)
+		if ((pos > 0 && readbytes != pos + 8) || c == EOF)
 			break;
 		memset(msg->data, 0, MAXDATASIZE-7);
 		memset(buf->data, 0, MAXDATASIZE-7);

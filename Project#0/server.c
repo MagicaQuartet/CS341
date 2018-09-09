@@ -20,9 +20,10 @@ void encrypt(char *str, uint8_t shift);
 void decrypt(char *str, uint8_t shift);
 
 int main (int argc, char *argv[]) {
-	int listenfd, connfd, numbytes;
+	int listenfd, connfd, numbytes, readbytes;
 	struct sockaddr_storage clientaddr;
 	socklen_t clientlen;
+	char buffer[1024];
 
 	if (argc != 3) {
 		fprintf(stderr, "usage: %s -p <port>\n", argv[0]);
@@ -41,23 +42,36 @@ int main (int argc, char *argv[]) {
 		if (!fork()) {
 			struct message *msg;
 			msg = (struct message *)calloc(1, sizeof(struct message));
-			if ((numbytes = read(connfd, msg, MAXDATASIZE+8)) == -1) {
-				perror("recv");
-				exit(1);
-			}
+			while (1) {
+				readbytes = 0;
+				while (1) {
+					memset(buffer, 0, 1024);
+					numbytes = read(connfd, buffer, 1024);
+					if (numbytes == -1) {
+						perror("read");
+						exit(1);
+					}
+					memcpy(((void *)msg)+readbytes, buffer, numbytes);
+					readbytes += numbytes;
+					if (readbytes == 0)
+						break;
 
-			if (check_valid(msg)) {
-				close(connfd);
-				free(msg);
-				exit(0);
-			}
+					if (readbytes >= 8 && (readbytes >= ntohl(msg->length) || ntohl(msg->length) < 8 || ntohl(msg->length > MAXDATASIZE)))
+						break;
+				}
+	
+				if (check_valid(msg) || readbytes < 8 || readbytes != ntohl(msg->length)) {
+					break;
+				}
+	
+				if (msg->op == 0)
+					encrypt(msg->data, msg->shift);
+				else if (msg->op == 1)
+					decrypt(msg->data, msg->shift);
+				write(connfd, msg, ntohl(msg->length));
 
-			if (msg->op == 0)
-				encrypt(msg->data, msg->shift);
-			else if (msg->op == 1)
-				decrypt(msg->data, msg->shift);
-			write(connfd, msg, ntohl(msg->length));
-			
+				memset(msg->data, 0, MAXDATASIZE-7);
+			}
 			close(connfd);
 			free(msg);
 			exit(0);
@@ -119,11 +133,13 @@ int check_valid(struct message *msg) {
 	uint32_t sum = 0;
 	uint16_t *p = (uint16_t *)msg;
 	
-	if (msg->op != 0 && msg->op != 1)
+	if (msg->op != 0 && msg->op != 1) {
 		return -1;
+	}
 
-	if (ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE)
+	if (ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE) {
 		return -1;
+	}
 
 	for (int i = 0; i < MAXDATASIZE / sizeof(uint16_t); i++) {
 		sum += *p;
@@ -132,8 +148,9 @@ int check_valid(struct message *msg) {
 			sum = (sum >> 16) + (sum & 0xffff);
 	}
 
-	if(sum+1 & 0xffff)
+	if(sum+1 & 0xffff) {
 		return -1;
+	}
 
 	return 0;
 }

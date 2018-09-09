@@ -3,4 +3,4 @@
 *.swp
 client
 server
-test_*
+*.txt
