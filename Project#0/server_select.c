@@ -1,4 +1,4 @@
-/* server.c */
+/* server_select.c */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <string.h>
 #include <ctype.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -29,7 +30,9 @@ void encrypt(char *str, uint8_t shift);
 void decrypt(char *str, uint8_t shift);
 
 int main (int argc, char *argv[]) {
-	int listenfd, connfd, numbytes, readbytes;
+	int listenfd, connfd, numbytes, readbytes, fdmax, i;
+	fd_set master;
+	fd_set read_fds;
 	struct sockaddr_storage clientaddr;
 	socklen_t clientlen;
 	char buffer[1024];
@@ -38,61 +41,88 @@ int main (int argc, char *argv[]) {
 		fprintf(stderr, "usage: %s -p <port>\n", argv[0]);
 		return argc;
 	}
+
+	FD_ZERO(&master);			// clear master set
+	FD_ZERO(&read_fds);
 	
 	/* call socket(), bind(), listen() functions */
 
 	listenfd = open_listenfd(argv[2]);
 
+	FD_SET(listenfd, &master);		// add listenfd into master set
+	fdmax = listenfd;							// fdmax will be the highest value among file descriptors
+
 	while(1) {			// main loop
-		clientlen = sizeof(struct sockaddr_storage);
-		connfd = accept(listenfd, (struct sockaddr *)&clientaddr, &clientlen);
-		if (connfd == -1) {
-			continue;
-		}
+		read_fds = master;					// set of file descriptors for which the server wait to read message
+																// ... in this program, it is same with master set except listenfd
 
-		if (!fork()) {							// create child process to process client's message
-			struct message *msg;
-			msg = (struct message *)calloc(1, sizeof(struct message));
-			while (1) {
+		if (select(fdmax+1, &read_fds, NULL, NULL, NULL) == -1) {			// after select() function returns, server can find file descriptor
+			perror("select");																						// ... which is ready for doing something by calling FD_ISSET macro
+			exit(1);
+		} 
 
-				/* read client's message */
-
-				readbytes = 0;
-				while (1) {																						// in this loop, server reads (1024byte or smaller) chunks of message from client
-					memset(buffer, 0, 1024); 
-					numbytes = read(connfd, buffer, 1024);
-					if (numbytes == -1) {
-						perror("read");
-						exit(1);
+		for (i = 0; i <= fdmax; i++) {																// iterate file descriptors
+			if (FD_ISSET(i, &read_fds)) {
+				if (i == listenfd) {																											// listenfd is ready to accept new client
+					clientlen = sizeof(struct sockaddr_storage);
+					connfd = accept(listenfd, (struct sockaddr *)&clientaddr, &clientlen);
+						
+					if (connfd == -1) {
+						perror("accept");
 					}
-					memcpy(((void *)msg)+readbytes, buffer, numbytes);
-					readbytes += numbytes;
-					if (readbytes == 0)																	// if there is no more chunks, escape loop
-						break;
-
-					if (readbytes >= 8 && (readbytes >= ntohl(msg->length) || ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE))
-						break;																						// if the entire header is read,
-				}																											// ... escape loop when there is no more space in message buf
-																															// ... or length written in message is invalid (to prevent using wrong length data)
-				
-				if (check_valid(msg) || readbytes < 8 || readbytes != ntohl(msg->length)) {		// if given message violate the protocol or length written in message is different from the actual one
-					break;																																			// do nothing and terminate this child process
+					else {
+						FD_SET(connfd, &master);																							// add new fd into master set
+						if (connfd > fdmax)
+							fdmax = connfd;
+					}
 				}
-	
-				if (msg->op == 0)
-					encrypt(msg->data, msg->shift);
-				else if (msg->op == 1)
-					decrypt(msg->data, msg->shift);
-				write(connfd, msg, ntohl(msg->length));
+				else {																																		// fd connected with client is ready to read message
+					struct message *msg;
+					msg = (struct message *)calloc(1, sizeof(struct message));
 
-				memset(msg->data, 0, MAXDATASIZE-7);
-				msg->checksum = 0x0000;
+					while (1) {
+
+					/* read client's message */
+
+						readbytes = 0;
+						while (1) {																						// in this loop, server reads (1024byte or smaller) chunks of message from client
+							memset(buffer, 0, 1024); 
+							numbytes = read(i, buffer, 1024);
+							if (numbytes == -1) {
+								perror("read");
+								close(i);
+								FD_CLR(i, &master);																// error occurs, so close and remove fd i
+								exit(1);
+							}
+							memcpy(((void *)msg)+readbytes, buffer, numbytes);
+							readbytes += numbytes;
+							if (readbytes == 0)																	// if there is no more chunks or connection is disconnected, escape loop
+								break;
+
+							if (readbytes >= 8 && (readbytes >= ntohl(msg->length) || ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE))
+								break;																						// if the entire header is read escape loop
+						}																											// ... escape loop when all message is read, length of message is invalid or there is no more space in message buf
+						
+						if (check_valid(msg) || readbytes < 8 || readbytes != ntohl(msg->length)) {		// if given message violate the protocol or length written in message is different from the actual one
+							close(i);
+							FD_CLR(i, &master);
+							break;																																			// terminate this child process
+						}
+
+					/* write encrypted/decrypted message to client */
+
+						if (msg->op == 0)
+							encrypt(msg->data, msg->shift);
+						else if (msg->op == 1)
+							decrypt(msg->data, msg->shift);
+						write(connfd, msg, ntohl(msg->length));
+
+						memset(msg->data, 0, MAXDATASIZE-7);
+						msg->checksum = 0x00;
+					}	
+				}
 			}
-			close(connfd);
-			free(msg);
-			exit(0);
 		}
-		close(connfd);
 	}
 
 	return 0;

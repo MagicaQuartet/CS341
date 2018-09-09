@@ -98,7 +98,6 @@ int main (int argc, char *argv[]) {
 				}
 				memcpy(((void *)buf)+readbytes, buffer, numbytes);
 				readbytes += numbytes;
-
 				if (readbytes == 0 || readbytes >= pos + 8)						// if there is no more chunk from server or no more space in the message buffer
 					break;																							// ... escape loop
 			}
