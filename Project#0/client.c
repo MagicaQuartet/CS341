@@ -15,18 +15,32 @@ int open_clientfd(char *hostname, char *port);
 uint16_t calculate_checksum(uint16_t *p);
 
 int main (int argc, char *argv[]) {
-	int clientfd, numbytes, pos;
+	int clientfd, numbytes, pos, i;
 	long long readbytes;
 	struct message *msg, *buf;
 	char c;
 	char buffer[1024];
+	char *host = NULL, *port = NULL, *op = NULL, *shift = NULL;
 	
 	if (argc != 9) {
 		fprintf(stderr, "usage: %s -h <host> -p <port> -o <operation> -s <shift>\n", argv[0]);
 		return argc;
 	}
+	
+	for (i = 1; i < argc; i++) {
+		if (!strncmp(argv[i], "-h", 2))
+			host = argv[i+1];
+		else if (!strncmp(argv[i], "-p", 2))
+			port = argv[i+1];
+		else if (!strncmp(argv[i], "-o", 2))
+			op = argv[i+1];
+		else if (!strncmp(argv[i], "-s", 2))
+			shift = argv[i+1];
+		else
+			continue;
+	}
 
-	if ((clientfd = open_clientfd(argv[2], argv[4])) == -1) {
+	if ((clientfd = open_clientfd(host, port)) == -1) {
 		perror("open_clientfd");
 		exit(1);
 	}
@@ -34,8 +48,8 @@ int main (int argc, char *argv[]) {
 	msg = (struct message *)calloc(1, sizeof(struct message));
 	buf = (struct message *)calloc(1, sizeof(struct message));
 	memset(msg, 0, sizeof(struct message));
-	msg->op = (uint8_t)atoi(argv[6]);
-	msg->shift = (uint8_t)atoi(argv[8]);
+	msg->op = (uint8_t)atoi(op);
+	msg->shift = (uint8_t)atoi(shift);
 
 	while (1) {
 		pos = 0;
