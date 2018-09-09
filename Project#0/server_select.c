@@ -24,24 +24,32 @@ struct message {
 	char 			data[MAXDATASIZE-7];	
 };
 
+struct client_info {
+	struct message *msg;
+	int readbytes;
+};
+
 int open_listenfd(char *port);
 int check_valid(struct message *msg);
 void encrypt(char *str, uint8_t shift);
 void decrypt(char *str, uint8_t shift);
 
 int main (int argc, char *argv[]) {
-	int listenfd, connfd, numbytes, readbytes, fdmax, i;
+	int listenfd, connfd, numbytes, fdmax, i;
 	fd_set master;
 	fd_set read_fds;
 	struct sockaddr_storage clientaddr;
 	socklen_t clientlen;
-	char buffer[1024];
+	char buffer[1000];
+	struct client_info **info;
+	int size = 10;
 
 	if (argc != 3) {
 		fprintf(stderr, "usage: %s -p <port>\n", argv[0]);
 		return argc;
 	}
 
+	info = (struct client_info **)calloc(size, sizeof(struct client_info *));
 	FD_ZERO(&master);			// clear master set
 	FD_ZERO(&read_fds);
 	
@@ -51,6 +59,7 @@ int main (int argc, char *argv[]) {
 
 	FD_SET(listenfd, &master);		// add listenfd into master set
 	fdmax = listenfd;							// fdmax will be the highest value among file descriptors
+
 
 	while(1) {			// main loop
 		read_fds = master;					// set of file descriptors for which the server wait to read message
@@ -72,54 +81,58 @@ int main (int argc, char *argv[]) {
 					}
 					else {
 						FD_SET(connfd, &master);																							// add new fd into master set
-						if (connfd > fdmax)
+						if (connfd > fdmax) {
 							fdmax = connfd;
+							if (fdmax >= size) {
+								size += 5;
+								info = (struct client_info **)realloc(info, size*sizeof(struct client_info *));
+							}
+						}
+						info[connfd] = (struct client_info *)calloc(1, sizeof(struct client_info));
+						info[connfd]->msg = (struct message *)calloc(1, sizeof(struct message));
+						memset(info[connfd]->msg, 0, sizeof(struct message));
+						info[connfd]->readbytes = 0;
 					}
 				}
 				else {																																		// fd connected with client is ready to read message
-					struct message *msg;
-					msg = (struct message *)calloc(1, sizeof(struct message));
-
-					while (1) {
 
 					/* read client's message */
+					
+					memset(buffer, 0, 1000); 
+					numbytes = read(i, buffer, 1000);
 
-						readbytes = 0;
-						while (1) {																						// in this loop, server reads (1024byte or smaller) chunks of message from client
-							memset(buffer, 0, 1024); 
-							numbytes = read(i, buffer, 1024);
-							if (numbytes == -1) {
-								perror("read");
-								close(i);
-								FD_CLR(i, &master);																// error occurs, so close and remove fd i
-								exit(1);
-							}
-							memcpy(((void *)msg)+readbytes, buffer, numbytes);
-							readbytes += numbytes;
-							if (readbytes == 0)																	// if there is no more chunks or connection is disconnected, escape loop
-								break;
+					if (numbytes <= 0) {
+						free(info[i]->msg);
+						free(info[i]);
+						close(i);
+						FD_CLR(i, &master);																// error occurs, so close and remove fd i
+						continue;
+					}
+					memcpy((void *)(info[i]->msg) + info[i]->readbytes, buffer, numbytes);
+					info[i]->readbytes += numbytes;
 
-							if (readbytes >= 8 && (readbytes >= ntohl(msg->length) || ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE))
-								break;																						// if the entire header is read escape loop
-						}																											// ... escape loop when all message is read, length of message is invalid or there is no more space in message buf
-						
-						if (check_valid(msg) || readbytes < 8 || readbytes != ntohl(msg->length)) {		// if given message violate the protocol or length written in message is different from the actual one
+					if (info[i]->readbytes >= 8 && ntohl(info[i]->msg->length) <= info[i]->readbytes) {
+						if (check_valid(info[i]->msg)) {
+							free(info[i]->msg);
+							free(info[i]);
 							close(i);
 							FD_CLR(i, &master);
-							break;																																			// terminate this child process
+							continue;
 						}
+						else {
 
 					/* write encrypted/decrypted message to client */
 
-						if (msg->op == 0)
-							encrypt(msg->data, msg->shift);
-						else if (msg->op == 1)
-							decrypt(msg->data, msg->shift);
-						write(connfd, msg, ntohl(msg->length));
-
-						memset(msg->data, 0, MAXDATASIZE-7);
-						msg->checksum = 0x00;
-					}	
+							if (info[i]->msg->op == 0)
+								encrypt(info[i]->msg->data, info[i]->msg->shift);
+							else if (info[i]->msg->op == 1)
+								decrypt(info[i]->msg->data, info[i]->msg->shift);
+							write(i, info[i]->msg, ntohl(info[i]->msg->length));
+							memset(info[i]->msg->data, 0, MAXDATASIZE-7);
+							info[i]->msg->checksum = 0x00;
+							info[i]->readbytes = 0;
+						}
+					}
 				}
 			}
 		}
