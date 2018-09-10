@@ -67,7 +67,7 @@ int main (int argc, char *argv[]) {
 					}
 					memcpy(((void *)msg)+readbytes, buffer, numbytes);
 					readbytes += numbytes;
-					if (readbytes == 0)																	// if there is no more chunks, escape loop
+					if (readbytes == 0)																	// if there is no more chunks or disconnection occurs, escape loop
 						break;
 
 					if (readbytes >= 8 && (readbytes >= ntohl(msg->length) || ntohl(msg->length) < 8 || ntohl(msg->length) > MAXDATASIZE))
@@ -76,7 +76,7 @@ int main (int argc, char *argv[]) {
 																															// ... or length written in message is invalid (to prevent using wrong length data)
 				
 				if (check_valid(msg) || readbytes < 8 || readbytes != ntohl(msg->length)) {		// if given message violate the protocol or length written in message is different from the actual one
-					break;																																			// do nothing and terminate this child process
+					break;																																			// do not send message and terminate this child process
 				}
 	
 				if (msg->op == 0)
@@ -100,6 +100,10 @@ int main (int argc, char *argv[]) {
 
 /* helper functions */
 
+/* open_listenfd() - Helper function that opens and returns a listening descriptor */
+
+/* Reference 1: Beej's Guide to Network Programming Using Internet Sockets (https://beej.us/guide/bgnet/html/single/bgnet.html) - Recommended link from Lab Session */
+/* Reference 2: Bryant, R.E., & O'Hallaron, D.R., Computer Systems A Programmers Perspective (3rd edition) - CS230 textbook */
 int open_listenfd(char *port) {
 	struct addrinfo hints, *listp, *p;
 	int listenfd, optval=1, gai;
@@ -146,6 +150,8 @@ int open_listenfd(char *port) {
 
 	return listenfd;
 }
+
+/* check_valid() - Helper function that tests validation of op, shift and checksum of the given message */
 
 int check_valid(struct message *msg) {
 	uint32_t sum = 0;

@@ -14,10 +14,10 @@
 #define MAXDATASIZE 10000000
 
 struct message {
-	uint8_t 	op;									/* 0: encrypt, 1: decrypt */
-	uint8_t 	shift;							/* # of shifts */
-	uint16_t 	checksum;						/* TCP checksum */
-	uint32_t 	length;							/* total length of message */
+	uint8_t 	op;									// 0: encrypt, 1: decrypt
+	uint8_t 	shift;							// # of shifts
+	uint16_t 	checksum;						// TCP checksum
+	uint32_t 	length;							// total length of message
 	char 			data[MAXDATASIZE-7];	
 };
 
@@ -69,7 +69,7 @@ int main (int argc, char *argv[]) {
 		
 		/* write message in client */
 		
-		pos = 0;
+		pos = 0;			// length of string in current message
 		while ((c=getchar()) != EOF) {			// get one char every time, and escape if EOF is received
 			if (c == '\n')										// '\n' means end of one input string
 				break;													// ... so exclude from message data and escape loop
@@ -80,7 +80,7 @@ int main (int argc, char *argv[]) {
 				break;													// ... escape loop
 		}
 
-		if (pos > 0) {																						// when empty string is received, i.e. enter key is pressed with no string, do nothing
+		if (pos > 0) {																						// when empty string is received, i.e. enter key or EOF is received with no string, do not send message
 			msg->length = htonl(pos + 8);
 			msg->checksum = calculate_checksum((uint16_t *)msg);		// calcuate checksum
 	
@@ -89,7 +89,7 @@ int main (int argc, char *argv[]) {
 		/* read message from server  */
 
 			readbytes = 0;
-			while (1) {																							// in this loop, client reads (1024bytes or smaller) chunks of message from server
+			while (1) {																							// in this loop, client reads (1000bytes or smaller) chunks of message from server
 				memset(buffer, 0, 1024);
 				numbytes = read(clientfd, buffer, 1024);
 				if (numbytes == -1) {
@@ -98,7 +98,7 @@ int main (int argc, char *argv[]) {
 				}
 				memcpy(((void *)buf)+readbytes, buffer, numbytes);
 				readbytes += numbytes;
-				if (readbytes == 0 || readbytes >= pos + 8)						// if there is no more chunk from server or no more space in the message buffer
+				if (readbytes == 0 || readbytes >= pos + 8)						// if there is no more chunk from server, connection is disconnected or no more space in the message buf
 					break;																							// ... escape loop
 			}
 
@@ -108,7 +108,7 @@ int main (int argc, char *argv[]) {
 			printf("%s", buf->data);
 			fflush(stdout);
 		}
-		if ((pos > 0 && readbytes != pos + 8) || c == EOF)				// (the former condition seems to be almost same with the very above lines)
+		if ((pos > 0 && readbytes != pos + 8) || c == EOF)				// (the former condition seems to be almost same with the very above lines...)
 			break;																									// if EOF is received, terminate
 		memset(msg->data, 0, MAXDATASIZE-7);											// ... otherwise fill data part of new message and message buf with 0
 		memset(buf->data, 0, MAXDATASIZE-7);
@@ -123,6 +123,10 @@ int main (int argc, char *argv[]) {
 
 /* helper functions */
 
+/* open_clientfd() - Helper function that establishes a connection with a server */
+
+/* Reference 1: Beej's Guide to Network Programming Using Internet Sockets (https://beej.us/guide/bgnet/html/single/bgnet.html) - Recommended link from Lab Session */
+/* Reference 2: Bryant, R.E., & O'Hallaron, D.R., Computer Systems A Programmers Perspective (3rd edition) - CS230 textbook */
 int open_clientfd(char *hostname, char *port) {
 	int clientfd, gai;
 	struct addrinfo hints, *listp, *p;
@@ -159,6 +163,8 @@ int open_clientfd(char *hostname, char *port) {
 		return clientfd;																																	// ... otherwise return created socket's fd
 	}
 }
+
+/* calculate_checksum() - Helper function that calculates the checksum of given message */
 
 uint16_t calculate_checksum(uint16_t *p) {
 	uint32_t checksum = 0;

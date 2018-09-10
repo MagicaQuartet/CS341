@@ -3,4 +3,5 @@
 *.swp
 client
 server
+server_select
 *.txt

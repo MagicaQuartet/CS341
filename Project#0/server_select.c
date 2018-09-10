@@ -17,16 +17,16 @@
 #define MAXDATASIZE 10000000
 
 struct message {
-	uint8_t 	op;									/* 0: encrypt, 1: decrypt */
-	uint8_t 	shift;							/* # of shifts */
-	uint16_t 	checksum;						/* TCP checksum */
-	uint32_t 	length;							/* total length of message */
+	uint8_t 	op;									// 0: encrypt, 1: decrypt
+	uint8_t 	shift;							// # of shifts
+	uint16_t 	checksum;						// TCP checksum
+	uint32_t 	length;							// total length of message
 	char 			data[MAXDATASIZE-7];	
 };
 
-struct client_info {
-	struct message *msg;
-	int readbytes;
+struct client_info {						// save information of message from a fd to continue works on the fd after processing messages from others
+	struct message *msg;					// ... msg: during reading from a fd, store data here
+	int readbytes;								// ... readbytes: length of stored bytes in msg
 };
 
 int open_listenfd(char *port);
@@ -40,7 +40,7 @@ int main (int argc, char *argv[]) {
 	fd_set read_fds;
 	struct sockaddr_storage clientaddr;
 	socklen_t clientlen;
-	char buffer[1000];
+	char buffer[1024];
 	struct client_info **info;
 	int size = 10;
 
@@ -64,7 +64,8 @@ int main (int argc, char *argv[]) {
 	while(1) {			// main loop
 		read_fds = master;					// set of file descriptors for which the server wait to read message
 																// ... in this program, it is same with master set except listenfd
-
+		
+		/* select() - Reference: Beej's Guide to Network Programming Using Internet Sockets - Recommended link from Lab Session */
 		if (select(fdmax+1, &read_fds, NULL, NULL, NULL) == -1) {			// after select() function returns, server can find file descriptor
 			perror("select");																						// ... which is ready for doing something by calling FD_ISSET macro
 			exit(1);
@@ -80,16 +81,16 @@ int main (int argc, char *argv[]) {
 						perror("accept");
 					}
 					else {
-						FD_SET(connfd, &master);																							// add new fd into master set
+						FD_SET(connfd, &master);																															// add new fd into master set
 						if (connfd > fdmax) {
 							fdmax = connfd;
-							if (fdmax >= size) {
+							if (fdmax >= size) {																																// if space for client_info is not enough, do realloc and get more space
 								size += 5;
 								info = (struct client_info **)realloc(info, size*sizeof(struct client_info *));
 							}
 						}
-						info[connfd] = (struct client_info *)calloc(1, sizeof(struct client_info));
-						info[connfd]->msg = (struct message *)calloc(1, sizeof(struct message));
+						info[connfd] = (struct client_info *)calloc(1, sizeof(struct client_info));						// allocate memory for client_info
+						info[connfd]->msg = (struct message *)calloc(1, sizeof(struct message));							// ... and message buf of new file descriptor
 						memset(info[connfd]->msg, 0, sizeof(struct message));
 						info[connfd]->readbytes = 0;
 					}
@@ -98,28 +99,28 @@ int main (int argc, char *argv[]) {
 
 					/* read client's message */
 					
-					memset(buffer, 0, 1000); 
-					numbytes = read(i, buffer, 1000);
+					memset(buffer, 0, 1024); 
+					numbytes = read(i, buffer, 1024);
 
 					if (numbytes <= 0) {
 						free(info[i]->msg);
 						free(info[i]);
 						close(i);
-						FD_CLR(i, &master);																// error occurs, so close and remove fd i
+						FD_CLR(i, &master);																																		// there is no more message chunks or disconnection or error occurs, so close and remove fd i
 						continue;
 					}
-					memcpy((void *)(info[i]->msg) + info[i]->readbytes, buffer, numbytes);
-					info[i]->readbytes += numbytes;
+					memcpy((void *)(info[i]->msg) + info[i]->readbytes, buffer, numbytes);									// save received chunks in message buf
+					info[i]->readbytes += numbytes;																													// ... and record total length of data in message buf
 
-					if (info[i]->readbytes >= 8 && ntohl(info[i]->msg->length) <= info[i]->readbytes) {
-						if (check_valid(info[i]->msg)) {
+					if (info[i]->readbytes >= 8 && ntohl(info[i]->msg->length) <= info[i]->readbytes) {			// entire message is received
+						if (check_valid(info[i]->msg)) {																													// if not valid message, discard message and this fd
 							free(info[i]->msg);
 							free(info[i]);
 							close(i);
 							FD_CLR(i, &master);
 							continue;
 						}
-						else {
+						else {																																										// if valid, encrypt/decrypt message and send it to client
 
 					/* write encrypted/decrypted message to client */
 
@@ -128,9 +129,9 @@ int main (int argc, char *argv[]) {
 							else if (info[i]->msg->op == 1)
 								decrypt(info[i]->msg->data, info[i]->msg->shift);
 							write(i, info[i]->msg, ntohl(info[i]->msg->length));
-							memset(info[i]->msg->data, 0, MAXDATASIZE-7);
+							memset(info[i]->msg->data, 0, MAXDATASIZE-7);																						// ... and clear data and checksum in message buf of this fd
 							info[i]->msg->checksum = 0x00;
-							info[i]->readbytes = 0;
+							info[i]->readbytes = 0;																																	// ... and also reset readbytes
 						}
 					}
 				}
@@ -143,6 +144,10 @@ int main (int argc, char *argv[]) {
 
 /* helper functions */
 
+/* open_listenfd() - Helper function that opens and returns a listening descriptor */
+
+/* Reference 1: Beej's Guide to Network Programming Using Internet Sockets (https://beej.us/guide/bgnet/html/single/bgnet.html) - Recommended link from Lab Session */
+/* Reference 2: Bryant, R.E., & O'Hallaron, D.R., Computer Systems A Programmers Perspective (3rd edition) - CS230 textbook */
 int open_listenfd(char *port) {
 	struct addrinfo hints, *listp, *p;
 	int listenfd, optval=1, gai;
@@ -189,6 +194,8 @@ int open_listenfd(char *port) {
 
 	return listenfd;
 }
+
+/* check_valid() - Helper function that tests validation of operation, shift and checksum value of the given message */
 
 int check_valid(struct message *msg) {
 	uint32_t sum = 0;
