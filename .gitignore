@@ -5,3 +5,11 @@ client
 server
 server_select
 *.txt
+/.*
+/*.pcap
+/current_checksum
+/*/tags
+/*/*/tags
+/*/*/*/tags
+/*/*/*/*/tags
+/*/*/*/*/*/tags
