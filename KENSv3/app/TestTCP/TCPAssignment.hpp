@@ -48,7 +48,39 @@ public:
 	static HostModule* allocate(Host* host) { return new TCPAssignment(host); }
 };
 
-}
+class BoundInfo
+{
+	int fd;
+	int bound;
+	uint32_t ip_addr;
+	uint16_t port;
+	BoundInfo* next;
 
+	public:
+		BoundInfo(int fd);
+		int getFd() { return this->fd; }
+		int getBound() { return this->bound; }
+		void setBound(int bound) { this->bound = bound; }
+		uint32_t getIp() { return this->ip_addr; }
+		void setIp(uint32_t ip_addr) { this->ip_addr = ip_addr; }
+		uint16_t getPort() { return this->port; }
+		void setPort(uint16_t port) { this->port = port; }
+		BoundInfo* getNext() { return this->next; }
+		void setNext(BoundInfo* next) { this->next = next; }
+};
+
+class BoundInfoHead
+{
+	BoundInfo* next;
+
+	public:
+		BoundInfoHead() { this->next = NULL; }
+		BoundInfo* findInfo(int fd, uint32_t ip_addr, uint16_t port);
+		int addInfo(int fd);
+		int bindInfo(int fd, uint32_t ip_addr, uint16_t port);
+		void unboundInfo(int fd);
+};
+
+}
 
 #endif /* E_TCPASSIGNMENT_HPP_ */
