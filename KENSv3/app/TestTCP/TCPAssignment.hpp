@@ -50,11 +50,11 @@ public:
 
 class BoundInfo
 {
-	int fd;
-	int bound;
-	uint32_t ip_addr;
-	uint16_t port;
-	BoundInfo* next;
+	int fd;							// file descriptor
+	int bound;					// -1: not bound, 1: bound
+	uint32_t ip_addr;		// valid only when bound is 1
+	uint16_t port;			// valid only when bound is 1
+	BoundInfo* next;		// next instance in the list
 
 	public:
 		BoundInfo(int fd);

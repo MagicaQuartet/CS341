@@ -18,25 +18,25 @@
 namespace E
 {
 
-BoundInfoHead* list = new BoundInfoHead();
+BoundInfoHead* list = new BoundInfoHead();																		// the head of the list of BoundInfo instances
 
-BoundInfo::BoundInfo(int fd)
+BoundInfo::BoundInfo(int fd)																									// the constructor of BoundInfo class
 {
 	this->fd = fd;
-	this->bound = -1;
-	this->ip_addr = 0;
-	this->port = 0;
-	this->next = NULL;
-}
+	this->bound = -1;																														// In default, this instance is not bound
+	this->ip_addr = 0;																													// ... and does not have ip_addr
+	this->port = 0;																															// ... and does not have port number
+	this->next = NULL;																													// ... and does not have the next instance
+}																																							// ... (initializing ip_addr and port number as 0 can be problematic, but can be handled properly by other functions)
 
-BoundInfo* BoundInfoHead::findInfo(int fd, uint32_t ip_addr, uint16_t port)
-{
-	BoundInfo* info = this->next;
-	if (fd < 0) {
+BoundInfo* BoundInfoHead::findInfo(int fd, uint32_t ip_addr, uint16_t port)		// search a BoundInfo instance (1) whose file descriptor is fd
+{																																							// ... or (2) whose ip address is ip_addr and port number is port
+	BoundInfo* info = this->next;																								// if such instance exists, return its pointer. Otherwise, return NULL.
+	if (fd < 0) {					// case (2)
 		while (info != NULL) {
-			if (info->getBound() == 1) {
-				if (ip_addr == 0 || info->getIp() == 0) {
-					if (port == info->getPort())
+			if (info->getBound() == 1) {				// this info has ip_addr and port number
+				if (ip_addr == 0 || info->getIp() == 0) {			// either of them is INADDR_ANY
+					if (port == info->getPort())								// ... then check port number
 						break;
 				}
 				else {
@@ -50,7 +50,7 @@ BoundInfo* BoundInfoHead::findInfo(int fd, uint32_t ip_addr, uint16_t port)
 
 		return info;
 	}
-	else {
+	else {								// case (1)
 		while (info != NULL) {
 			if (fd == info->getFd())
 				break;
@@ -62,13 +62,13 @@ BoundInfo* BoundInfoHead::findInfo(int fd, uint32_t ip_addr, uint16_t port)
 	}
 }
 
-int BoundInfoHead::addInfo(int fd)
+int BoundInfoHead::addInfo(int fd)																						// add a BoundInfo instance whose file descriptor is fd
 {
-	if (this->next == NULL) {
-		this->next = new BoundInfo(fd);
+	if (this->next == NULL) {																										// if the list is empty
+		this->next = new BoundInfo(fd);																						// ... just add the instance
 		return 0;
 	}
-	else {
+	else {																																			// otherwise, check if there is the other instance whose file descriptor is also fd or not
 		if (this->findInfo(fd, -1, -1) == NULL) {
 			BoundInfo* new_elem = new BoundInfo(fd);
 			BoundInfo* next_elem = this->next;
@@ -81,19 +81,19 @@ int BoundInfoHead::addInfo(int fd)
 	}
 }
 
-int BoundInfoHead::bindInfo(int fd, uint32_t ip_addr, uint16_t port)
+int BoundInfoHead::bindInfo(int fd, uint32_t ip_addr, uint16_t port)					// bind a socket whose file descriptor is fd where ip address is ip_addrr and port number is port
 {
 	if (ntohs(port) > 10000)
 		return -1;
 
 	BoundInfo* info = this->findInfo(fd, -1, -1);
 
-	if (info == NULL)
+	if (info == NULL)																														// check if a socket whose file descriptor is fd is already created
 		return -1;
-	else if (info->getBound() == 1)
+	else if (info->getBound() == 1)																							// if exists, check if it is bound or not.
 		return -1;
 	else {
-		BoundInfo* temp = this->findInfo(-1, ip_addr, port);
+		BoundInfo* temp = this->findInfo(-1, ip_addr, port);											// if not bound, check if this socket can be bound without violating bind rules
 		if (temp != NULL)
 			return -1;
 		else {
@@ -105,8 +105,8 @@ int BoundInfoHead::bindInfo(int fd, uint32_t ip_addr, uint16_t port)
 	}
 }
 
-void BoundInfoHead::unboundInfo(int fd)
-{
+void BoundInfoHead::unboundInfo(int fd)																				// this function is called when handling close() system call
+{																																							// remove a BoundInfo instance whose file descriptor is fd from the list
 	BoundInfo* info = this->next;
 	BoundInfo* prev = NULL;
 
@@ -202,7 +202,7 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		//		static_cast<socklen_t*>(param.param3_ptr));
 		ptr = (struct sockaddr_in *)param.param2_ptr;
 		info = list->findInfo(param.param1_int, -1, -1);
-		if (info == NULL || info->getBound() == -1)
+		if (info == NULL || info->getBound() == -1)				// if a socket whose file descriptor is fd is not created or not bound
 			ret = -1;
 		else {
 			ptr->sin_family = AF_INET;
