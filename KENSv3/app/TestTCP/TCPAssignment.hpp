@@ -22,8 +22,6 @@
 namespace E
 {
 
-enum {ST_CLOSED, ST_LISTEN, ST_SYN_SENT, ST_SYN_RCVD, ST_ESTABLISHED};
-
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
@@ -48,51 +46,6 @@ private:
 	~TCPAssignmentProvider() {}
 public:
 	static HostModule* allocate(Host* host) { return new TCPAssignment(host); }
-};
-
-class BoundInfo
-{
-	int fd;							// file descriptor
-	int bound;					// -1: not bound, 1: bound
-	uint32_t ip_addr;		// valid only when bound is 1
-	uint16_t port;			// valid only when bound is 1
-	BoundInfo* next;		// next instance in the list
-
-	int state;
-	uint32_t dest_ip_addr;
-	uint16_t dest_port;
-
-	public:
-		BoundInfo(int fd);
-		int getFd() { return this->fd; }
-		int getBound() { return this->bound; }
-		void setBound(int bound) { this->bound = bound; }
-		uint32_t getIp() { return this->ip_addr; }
-		void setIp(uint32_t ip_addr) { this->ip_addr = ip_addr; }
-		uint16_t getPort() { return this->port; }
-		void setPort(uint16_t port) { this->port = port; }
-		BoundInfo* getNext() { return this->next; }
-		void setNext(BoundInfo* next) { this->next = next; }
-
-		int getState() { return this->state; }
-		uint32_t getDestIp() { return this->dest_ip_addr; }
-		uint16_t getDestPort() { return this->dest_port; }
-		void setState(int state) { this->state = state; }
-		void setDestIp(uint32_t ip) { this->dest_ip_addr = ip; }
-		void setDestPort(uint16_t port) { this->dest_port = port; }
-
-};
-
-class BoundInfoHead
-{
-	BoundInfo* next;
-
-	public:
-		BoundInfoHead() { this->next = NULL; }
-		BoundInfo* findInfo(int fd, uint32_t ip_addr, uint16_t port);
-		int addInfo(int fd);
-		int bindInfo(int fd, uint32_t ip_addr, uint16_t port);
-		void unboundInfo(int fd);
 };
 
 }
