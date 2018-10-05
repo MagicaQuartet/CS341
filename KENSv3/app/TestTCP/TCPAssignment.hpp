@@ -22,6 +22,8 @@
 namespace E
 {
 
+enum {ST_CLOSED, ST_LISTEN, ST_SYN_SENT, ST_SYN_RCVD, ST_ESTABLISHED};
+
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
@@ -56,6 +58,10 @@ class BoundInfo
 	uint16_t port;			// valid only when bound is 1
 	BoundInfo* next;		// next instance in the list
 
+	int state;
+	uint32_t dest_ip_addr;
+	uint16_t dest_port;
+
 	public:
 		BoundInfo(int fd);
 		int getFd() { return this->fd; }
@@ -67,6 +73,14 @@ class BoundInfo
 		void setPort(uint16_t port) { this->port = port; }
 		BoundInfo* getNext() { return this->next; }
 		void setNext(BoundInfo* next) { this->next = next; }
+
+		int getState() { return this->state; }
+		uint32_t getDestIp() { return this->dest_ip_addr; }
+		uint16_t getDestPort() { return this->dest_port; }
+		void setState(int state) { this->state = state; }
+		void setDestIp(uint32_t ip) { this->dest_ip_addr = ip; }
+		void setDestPort(uint16_t port) { this->dest_port = port; }
+
 };
 
 class BoundInfoHead
