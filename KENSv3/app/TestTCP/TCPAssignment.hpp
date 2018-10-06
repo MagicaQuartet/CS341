@@ -22,10 +22,37 @@
 namespace E
 {
 
+struct socket_info {
+	int fd;
+	int pid;
+	bool bind;
+	int state;
+	int seqnum;
+	uint32_t backlog;
+	uint32_t src_ip;
+	uint16_t src_port;
+	uint32_t dest_ip;
+	uint16_t dest_port;
+};
+
+struct connection_info {
+	uint32_t client_ip;
+	uint16_t client_port;
+	uint32_t server_ip;
+	uint16_t server_port;
+};
+
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
+	std::list<struct socket_info*> socket_list;
+	std::list<struct socket_info*> connect_socket_list;
+	std::list<std::pair<struct socket_info*, UUID>> block_connect;
+	std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>> block_accept;
+	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;
 
+	std::map<int, std::list<struct connection_info*>> connection_SYN;
+	std::map<int, std::list<struct connection_info*>> connection_ACK;
 private:
 	virtual void timerCallback(void* payload) final;
 
