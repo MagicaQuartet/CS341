@@ -25,6 +25,7 @@ namespace E
 struct socket_info {
 	int fd;
 	int pid;
+	int listenUUID;
 
 	bool bind;
 	int state;
@@ -54,8 +55,8 @@ private:
 	std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>> block_accept;
 	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;
 
-	std::map<int, std::list<struct connection_info*>> connection_SYN;
-	std::map<int, std::list<struct connection_info*>> connection_ACK;
+	std::map<UUID, std::list<struct connection_info*>> connection_SYN;
+	std::map<UUID, std::list<struct connection_info*>> connection_ACK;
 private:
 	virtual void timerCallback(void* payload) final;
 
@@ -72,8 +73,8 @@ protected:
 	// int syscall_read();
 	// int syscall_write();
 	void syscall_connect(UUID syscallUUID, int pid, int fd, struct sockaddr* addr, socklen_t len);
-	// void syscall_listen();
-	// int syscall_accept();
+	int syscall_listen(UUID syscallUUID, int pid, int fd, int backlog);
+	void syscall_accept(UUID syscallUUID, int pid, int fd, struct sockaddr *addr, socklen_t *lenptr);
 	int syscall_bind(int pid, int fd, struct sockaddr * addr, socklen_t len);
 	int syscall_getsockname(int pid, int fd, struct sockaddr *addr, socklen_t *lenptr);
 	int syscall_getpeername(int pid, int fd, struct sockaddr *addr, socklen_t *lenptr);

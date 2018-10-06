@@ -92,6 +92,7 @@ int TCPAssignment::syscall_socket(int pid) {
 
 	sock->fd = fd;
 	sock->pid = pid;
+	sock->listenUUID = 0;
 
 	sock->bind = false;
 	sock->state = ST_CLOSED;
@@ -195,6 +196,91 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		fflush(stdout);
 		this->sendPacket("IPv4", packet);
 		//this->freePacket(packet);
+	}
+}
+
+/* LISTEN */
+
+int TCPAssignment::syscall_listen(UUID syscallUUID, int pid, int fd, int backlog) {
+	struct socket_info* sock;
+	int ret;
+
+	sock = NULL;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+
+	if (sock == NULL)
+		ret = -1;
+	else {
+		sock->state = ST_LISTEN;
+		sock->listenUUID = syscallUUID;
+		sock->backlog = backlog;
+		this->connection_SYN[syscallUUID] = std::list<struct connection_info*>();
+		this->connection_ACK[syscallUUID] = std::list<struct connection_info*>();
+		ret = 0;
+	}
+
+	return ret;
+}
+
+/* ACCEPT */
+void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct sockaddr *addr, socklen_t *lenptr) {
+	struct socket_info* sock, *new_socket;
+	struct sockaddr_in* ptr;
+
+	ptr = (struct sockaddr_in *)addr;
+	sock = NULL;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+	if (sock == NULL || sock->state != ST_LISTEN)
+		this->returnSystemCall(syscallUUID, -1);
+	else {
+		fd = this->createFileDescriptor(pid);
+		new_socket = (struct socket_info*)calloc(sizeof(socket_info), 1);
+		new_socket->fd = fd;
+		new_socket->pid = pid;
+		new_socket->listenUUID = 0;
+
+		new_socket->state = ST_SYN_RCVD;
+		new_socket->bind = false;
+
+		new_socket->seqnum = 0;
+		new_socket->backlog = 0;
+		new_socket->src_ip = sock->src_ip;
+		new_socket->src_port = sock->src_port;
+		new_socket->dest_ip = 0;
+		new_socket->dest_port = 0;
+		this->connect_socket_list.push_back(new_socket);
+
+		if (this->connection_ACK[sock->fd].empty()) {
+			printf("										>>> ACCEPT: no ACKed connection, BLOCKED\n");
+			this->block_accept.push_back(std::make_pair(sock, std::make_pair(syscallUUID, new_socket)));
+			this->block_accept_addr.push_back(std::make_pair(syscallUUID, ptr));
+		}
+		else {
+			printf("										>>> ACCEPT: ACKed connection found, CONNECTION COMPLETE\n");
+			new_socket->bind = true;
+			new_socket->state = ST_ESTABLISHED;
+			new_socket->dest_ip = this->connection_ACK[sock->fd].front()->client_ip;
+			new_socket->dest_port = this->connection_ACK[sock->fd].front()->client_port;
+			ptr->sin_family = AF_INET;
+			ptr->sin_addr.s_addr = new_socket->dest_ip;
+			ptr->sin_port = new_socket->dest_port;
+
+			//free(this->connection_ACK[sock->fd].front());
+			this->connection_ACK[sock->fd].pop_front();
+			this->returnSystemCall(syscallUUID, new_socket->fd);
+		}
 	}
 }
 
@@ -312,9 +398,7 @@ int TCPAssignment::syscall_getpeername(int pid, int fd, struct sockaddr *addr, s
 
 void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param)
 {
-	struct socket_info* sock, *new_socket;
-	struct sockaddr_in* ptr;
-	int fd, ret;
+	int ret;
 
 	switch(param.syscallNumber)
 	{
@@ -340,78 +424,14 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		break;
 	case LISTEN:
 		//this->syscall_listen(syscallUUID, pid, param.param1_int, param.param2_int);
-		/*
-		sock = NULL;
-
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if ((*it)->fd == param.param1_int && (*it)->pid == pid) {
-				sock = *it;
-				break;
-			}
-		}
-
-		if (sock == NULL)
-			this->returnSystemCall(syscallUUID, -1);
-		else {
-			sock->state = ST_LISTEN;
-			sock->backlog = param.param2_int;
-			this->connection_SYN[sock->fd] = std::list<struct connection_info*>();
-			this->connection_ACK[sock->fd] = std::list<struct connection_info*>();
-			this->returnSystemCall(syscallUUID, 0);
-		}
-		*/
+		ret = this->syscall_listen(syscallUUID, pid, param.param1_int, param.param2_int);
+		this->returnSystemCall(syscallUUID, ret);
 		break;
 	case ACCEPT:
 		//this->syscall_accept(syscallUUID, pid, param.param1_int,
 		//		static_cast<struct sockaddr*>(param.param2_ptr),
 		//		static_cast<socklen_t*>(param.param3_ptr));
-		/*
-		ptr = (struct sockaddr_in *)param.param2_ptr;
-		sock = NULL;
-
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if ((*it)->fd == param.param1_int) {
-				sock = *it;
-				break;
-			}
-		}
-		printf("												>>> ACCEPT\n");
-		if (sock == NULL || sock->state != ST_LISTEN)
-			this->returnSystemCall(syscallUUID, -1);
-		else {
-			fd = this->createFileDescriptor(pid);
-			new_socket = (struct socket_info*)calloc(sizeof(socket_info), 1);
-			new_socket->fd = fd;
-			new_socket->state = ST_SYN_RCVD;
-			new_socket->bind = false;
-			new_socket->backlog = 0;
-			new_socket->src_ip = sock->src_ip;
-			new_socket->src_port = sock->src_port;
-			new_socket->dest_ip = 0;
-			new_socket->dest_port = 0;
-			this->connect_socket_list.push_back(new_socket);
-
-			if (this->connection_ACK[sock->fd].empty()) {
-				printf("										>>> ACCEPT: no ACKed connection, BLOCKED\n");
-				this->block_accept.push_back(std::make_pair(sock, std::make_pair(syscallUUID, new_socket)));
-				this->block_accept_addr.push_back(std::make_pair(syscallUUID, ptr));
-			}
-			else {
-				printf("										>>> ACCEPT: ACKed connection found, CONNECTION COMPLETE\n");
-				new_socket->bind = true;
-				new_socket->state = ST_ESTABLISHED;
-				new_socket->dest_ip = this->connection_ACK[sock->fd].front()->client_ip;
-				new_socket->dest_port = this->connection_ACK[sock->fd].front()->client_port;
-				ptr->sin_family = AF_INET;
-				ptr->sin_addr.s_addr = new_socket->dest_ip;
-				ptr->sin_port = new_socket->dest_port;
-
-				free(this->connection_ACK[sock->fd].front());
-				this->connection_ACK[sock->fd].pop_front();
-				this->returnSystemCall(syscallUUID, new_socket->fd);
-			}
-		}
-		*/
+		this->syscall_accept(syscallUUID, pid, param.param1_int, (struct sockaddr*)param.param2_ptr, (socklen_t *)param.param3_ptr);
 		break;
 	case BIND:
 		//this->syscall_bind(syscallUUID, pid, param.param1_int,
@@ -475,50 +495,62 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 */
 
 	if (!(bits & ack)) {
-		// only SYN, first step
-		/*
+		// SYN
+		
 		new_packet = this->clonePacket(packet);
 		bits = syn | ack;
 		
 		sock = NULL;
 
 		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port && (*it)->state == ST_LISTEN) {
+			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
 				sock = *it;
 				break;
 			}
 		}
 
 		if (sock != NULL) {
-//			printf("										>>> trace LISTEN socket\n");
-			struct connection_info* conninfo;
-			conninfo = (struct connection_info*)calloc(sizeof(struct connection_info*), 1);
+			if (sock->state == ST_LISTEN) {
+				struct connection_info* conninfo;
+				conninfo = (struct connection_info*)calloc(sizeof(struct connection_info*), 1);
+	
+				conninfo->client_ip = *(uint32_t*)src_ip;
+				conninfo->client_port = *(uint16_t*)src_port;
+				conninfo->server_ip = *(uint32_t*)dest_ip;
+				conninfo->server_port = *(uint16_t*)dest_port;
 
-			conninfo->client_ip = *(uint32_t*)src_ip;
-			conninfo->client_port = *(uint16_t*)src_port;
-			conninfo->server_ip = *(uint32_t*)dest_ip;
-			conninfo->server_port = *(uint16_t*)dest_port;
+				if (this->connection_SYN[sock->listenUUID].size() < sock->backlog) {
+					this->connection_SYN[sock->listenUUID].push_back(conninfo);
+				}
 
-			if (this->connection_SYN[sock->fd].size() < sock->backlog) {
-				this->connection_SYN[sock->fd].push_back(conninfo);
-			}
-		}
+				seqnum = htonl(sock->seqnum);
+				sock->seqnum += 1;
+				acknum = htonl(ntohl(acknum)+1);
+
+				new_packet->writeData(14+12, dest_ip, 4);
+				new_packet->writeData(14+16, src_ip, 4);
+				new_packet->writeData(14+20+0, dest_port, 2);
+				new_packet->writeData(14+20+2, src_port, 2);
+				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+				new_packet->writeData(14+20+13, &bits, 1);
 		
-		new_packet->writeData(14+12, dest_ip, 4);
-		new_packet->writeData(14+16, src_ip, 4);
-		new_packet->writeData(14+20+0, dest_port, 2);
-		new_packet->writeData(14+20+2, src_port, 2);
-		new_packet->writeData(14+20+13, &bits, 1);
+				new_packet->readData(14+20, TCPHeader, 20);
+				*(uint16_t*)(TCPHeader+16) = 0;
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
 
-//		new_packet->readData(14+20+13, &bits, 1);
-//		printf("										>>> send SYNACK(0x%x)\n", bits);
-		this->sendPacket("IPv4", new_packet);
+				new_packet->writeData(14+20, TCPHeader, 20);
+				this->sendPacket("IPv4", new_packet);
+			}
+			else {
+				printf("																>>>>> maybe simultaneous?\n");
+			}
+		}	
 		//this->freePacket(new_packet)
-		*/
 	}
 	else {
 		if (bits & syn) {
-			// SYNACK, second step
+			// SYNACK
 			UUID uuid = 0;
 			new_packet = this->clonePacket(packet);
 			bits = ack;
@@ -560,8 +592,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			//this->freePacket(new_packet);
 		}
 		else {
-			// only ACK, third step
-			/*
+			// ACK
 			UUID uuid = 0;
 			struct socket_info* new_socket = NULL;
 			struct socket_info* listen_socket = NULL;
@@ -569,24 +600,22 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			sock = NULL;
 
 			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port && (*it)->state == ST_LISTEN) {
 					listen_socket = *it;
 					break;
 				}
 			}
 			
 			if (listen_socket != NULL) {
-//				printf("										>>> trace LISTEN socket\n");
-				for (std::list<struct connection_info*>::iterator it=this->connection_SYN[listen_socket->fd].begin(); it!=this->connection_SYN[listen_socket->fd].end(); ++it) {
+				for (std::list<struct connection_info*>::iterator it=this->connection_SYN[listen_socket->listenUUID].begin(); it!=this->connection_SYN[listen_socket->listenUUID].end(); ++it) {
 					if ((*it)->client_port == *(uint16_t*)src_port && (*(uint32_t*)src_ip == 0 || (*it)->client_ip == *(uint32_t*)src_ip)) {
 						conninfo = *it;
-						this->connection_SYN[listen_socket->fd].erase(it);
+						this->connection_SYN[listen_socket->listenUUID].erase(it);
 						break;
 					}
 				}
 				
 				if (conninfo != NULL) {
-//					printf("										>>> trace SYNed connection\n");
 					for (std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>>::iterator it=this->block_accept.begin(); it!=this->block_accept.end(); ++it) {
 						if (((*it).first->src_ip == 0 || (*it).first->src_ip == *(uint32_t*)dest_ip) && (*it).first->src_port == *(uint16_t*)dest_port) {
 							sock = (*it).first;
@@ -598,7 +627,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					}
 		
 					if (sock != NULL) {
-//						printf("										>>> blocked ACCEPT found\n");
 						// blocked accept exists (backlog check in connection_SYN needed?)
 						new_socket->dest_ip = *(uint32_t*)src_ip;
 						new_socket->dest_port = *(uint16_t*)src_port;
@@ -615,13 +643,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						this->returnSystemCall(uuid, new_socket->fd);
 					}
 					else {
-//						printf("										>>> no blocked ACCEPT\n");
 						// no blocked accept
-						this->connection_ACK[listen_socket->fd].push_back(conninfo);	
+						this->connection_ACK[listen_socket->listenUUID].push_back(conninfo);	
 					}
 				}
 			}
-			*/
 		}
 	}
 }
