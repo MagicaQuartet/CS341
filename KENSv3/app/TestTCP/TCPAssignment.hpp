@@ -25,10 +25,13 @@ namespace E
 struct socket_info {
 	int fd;
 	int pid;
+
 	bool bind;
 	int state;
+
 	int seqnum;
 	uint32_t backlog;
+	
 	uint32_t src_ip;
 	uint16_t src_port;
 	uint32_t dest_ip;
@@ -64,6 +67,16 @@ public:
 protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;
+	int syscall_socket(int pid);
+	void syscall_close(int pid, int fd);
+	// int syscall_read();
+	// int syscall_write();
+	void syscall_connect(UUID syscallUUID, int pid, int fd, struct sockaddr* addr, socklen_t len);
+	// void syscall_listen();
+	// int syscall_accept();
+	int syscall_bind(int pid, int fd, struct sockaddr * addr, socklen_t len);
+	int syscall_getsockname(int pid, int fd, struct sockaddr *addr, socklen_t *lenptr);
+	int syscall_getpeername(int pid, int fd, struct sockaddr *addr, socklen_t *lenptr);
 };
 
 class TCPAssignmentProvider

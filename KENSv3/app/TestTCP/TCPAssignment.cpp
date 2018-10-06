@@ -47,6 +47,8 @@ void TCPAssignment::finalize()
 
 }
 
+/* helper functions */
+
 uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t *src_ip, uint8_t *dest_ip) {
 	uint32_t sum = 0;
 
@@ -68,15 +70,244 @@ uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t *src_ip, uint8_t *dest_ip) {
 			sum = (sum >> 16) + (sum & 0xffff);
 	}
 
-	sum += 20;
+	sum += 20;	// header size
 	while (sum >> 16)
 		sum = (sum >> 16) + (sum & 0xffff);
 
-	sum += 6;
+	sum += 6;		// protocol
 	while (sum >> 16)
 		sum = (sum >> 16) + (sum & 0xffff);		
 
 	return (uint16_t)~sum;
+}
+
+/* SOCKET */
+
+int TCPAssignment::syscall_socket(int pid) {
+	int fd;
+	struct socket_info* sock;
+
+	fd = this->createFileDescriptor(pid);
+	sock = (struct socket_info*)calloc(sizeof(struct socket_info), 1);
+
+	sock->fd = fd;
+	sock->pid = pid;
+
+	sock->bind = false;
+	sock->state = ST_CLOSED;
+
+	sock->seqnum = 0;
+	sock->backlog = 0;
+
+	sock->src_ip = 0;
+	sock->src_port = 0;
+	sock->dest_ip = 0;
+	sock->dest_port = 0;
+
+	this->socket_list.push_back(sock);
+
+	return fd;
+}
+
+/* CLOSE */
+
+void TCPAssignment::syscall_close(int pid, int fd) {
+	this->removeFileDescriptor(pid, fd);
+	bool erased = false;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			free(*it);
+			this->socket_list.erase(it);
+			erased = true;
+			break;
+		}
+	}
+
+	if (!erased) {
+		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+			if ((*it)->fd == fd && (*it)->pid == pid) {
+				free(*it);
+				this->connect_socket_list.erase(it);
+				break;
+			}
+		}
+	}
+}
+
+/* CONNECT */
+
+void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct sockaddr* addr, socklen_t len) {
+	struct sockaddr_in* ptr;
+	struct socket_info* sock;
+	Host *host;
+	Packet *packet;
+	uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
+	
+	ptr = (struct sockaddr_in*)addr;
+	host = this->getHost();	
+	sock = NULL;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+
+	if (sock == NULL || sock->bind)
+		this->returnSystemCall(syscallUUID, -1);
+	else {
+		if (!sock->bind) {
+			*(uint32_t*)dest_ip = ptr->sin_addr.s_addr;
+			sock->state = ST_SYN_SENT;
+			host->getIPAddr(src_ip, host->getRoutingTable(dest_ip));
+			sock->src_ip = *(uint32_t*)src_ip;
+			sock->src_port = htons(65535);
+		}
+		sock->dest_ip = ptr->sin_addr.s_addr;
+		sock->dest_port = ptr->sin_port;
+		
+		packet = this->allocatePacket(PACKETSIZE);
+		memset(TCPHeader, 0, 20);
+		*(uint32_t*)src_ip = sock->src_ip;
+		*(uint32_t*)dest_ip = sock->dest_ip;
+		*(uint16_t*)TCPHeader = sock->src_port;
+		*(uint16_t*)(TCPHeader+2) = sock->dest_port;
+		*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);
+		sock->seqnum += 1;
+		*(TCPHeader+12) = 0x50;
+		*(TCPHeader+13) = 0x02;
+		*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);
+		packet->writeData(14+12, src_ip, 4);
+		packet->writeData(14+16, dest_ip, 4);
+	
+		*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
+		packet->writeData(14+20, TCPHeader, 20);
+
+//		for (int i = 0; i < 20; i++) {
+//			printf("%x\t", TCPHeader[i]);
+//			if (i % 4 == 3)
+//				printf("\n");
+//		}
+
+		this->block_connect.push_back(std::make_pair(sock, syscallUUID));
+		fflush(stdout);
+		this->sendPacket("IPv4", packet);
+		//this->freePacket(packet);
+	}
+}
+
+/* BIND */
+
+int TCPAssignment::syscall_bind(int pid, int fd, struct sockaddr *addr, socklen_t len) {
+	struct socket_info *sock;
+	struct sockaddr_in *ptr;
+	int ret;
+
+	ptr = (struct sockaddr_in *)addr;
+	sock = NULL;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+		
+	if (sock == NULL) {
+			printf("								>>> error: no socket\n");
+		ret = -1;
+	}
+	else {
+		if (sock->bind) {
+				printf("									>>> error: double binding\n");
+			ret = -1;
+		}
+		else {
+			ret = 0;
+			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+				if ((ptr->sin_addr.s_addr == 0 || (*it)->src_ip == 0 || ptr->sin_addr.s_addr == (*it)->src_ip) && ptr->sin_port == (*it)->src_port) {
+					printf("											>>> error: bind rule violation\n");
+					ret = -1;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!ret) {
+		sock->bind = true;
+		sock->src_ip = ptr->sin_addr.s_addr;
+		sock->src_port = ptr->sin_port;
+	}
+
+	return ret;
+}
+
+/* GETSOCKNAME */
+
+int TCPAssignment::syscall_getsockname(int pid, int fd, struct sockaddr *addr, socklen_t *lenptr) {
+	struct socket_info *sock;
+	struct sockaddr_in *ptr;
+	int ret;
+
+	ptr = (struct sockaddr_in *)addr;
+	sock = NULL;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+	if (sock == NULL) {
+		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+			if ((*it)->fd == fd && (*it)->pid == pid) {
+				sock = *it;
+				break;
+			}
+		}
+	}
+
+	if (sock == NULL)
+		ret = -1;
+	else {
+		ptr->sin_family = AF_INET;
+		ptr->sin_addr.s_addr = sock->src_ip;
+		ptr->sin_port = sock->src_port;
+		ret = 0;
+	}
+
+	return ret;
+}
+
+/* GETPEERNAME */
+int TCPAssignment::syscall_getpeername(int pid, int fd, struct sockaddr *addr, socklen_t *lenptr) {
+	struct socket_info* sock;
+	struct sockaddr_in *ptr;
+
+	sock = NULL;
+	ptr = (struct sockaddr_in *)addr;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+
+	if (sock == NULL || sock->state != ST_ESTABLISHED) {
+		printf("												>>> GETPEERNAME: no such socket\n");
+		return -1;
+	}
+	else {
+		ptr->sin_family = AF_INET;
+		ptr->sin_addr.s_addr = sock->dest_ip;
+		ptr->sin_port = sock->dest_port;
+
+		return 0;
+	}
 }
 
 void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param)
@@ -84,58 +315,16 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 	struct socket_info* sock, *new_socket;
 	struct sockaddr_in* ptr;
 	int fd, ret;
-	uint8_t ip[4], ip_buf[4], src_ip[4], dest_ip[4], TCPHeader[20], protocol;
-	bool erased;
-	Host *host;
-	Packet *packet;
 
 	switch(param.syscallNumber)
 	{
 	case SOCKET:
 		//this->syscall_socket(syscallUUID, pid, param.param1_int, param.param2_int);
-		fd = this->createFileDescriptor(pid);
-		sock = (struct socket_info*)calloc(sizeof(struct socket_info), 1);
-
-		sock->fd = fd;
-		sock->pid = pid;
-		sock->state = ST_CLOSED;
-		sock->bind = false;
-		sock->seqnum = 0;
-		sock->backlog = 0;
-
-		sock->src_ip = 0;
-		sock->src_port = 0;
-		sock->dest_ip = 0;
-		sock->dest_port = 0;
-
-		this->socket_list.push_back(sock);
-
-		this->returnSystemCall(syscallUUID, fd);
+		this->returnSystemCall(syscallUUID, this->syscall_socket(pid));
 		break;
 	case CLOSE:
 		//this->syscall_close(syscallUUID, pid, param.param1_int);
-		this->removeFileDescriptor(pid, param.param1_int);
-		erased = false;
-
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if ((*it)->fd == param.param1_int) {
-				free(*it);
-				this->socket_list.erase(it);
-				erased = true;
-				break;
-			}
-		}
-
-		if (!erased) {
-			for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
-				if ((*it)->fd == param.param1_int) {
-					free(*it);
-					this->connect_socket_list.erase(it);
-					break;
-				}
-			}
-		}
-
+		this->syscall_close(pid, param.param1_int);
 		this->returnSystemCall(syscallUUID, 0);
 		break;
 	case READ:
@@ -147,69 +336,11 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 	case CONNECT:
 		//this->syscall_connect(syscallUUID, pid, param.param1_int,
 		//		static_cast<struct sockaddr*>(param.param2_ptr), (socklen_t)param.param3_int);
-		ptr = (struct sockaddr_in*)param.param2_ptr;
-		host = this->getHost();
-		
-		sock = NULL;
-
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if ((*it)->fd == param.param1_int && (*it)->pid == pid) {
-				sock = *it;
-				break;
-			}
-		}
-	
-		if (sock == NULL || sock->bind)
-			this->returnSystemCall(syscallUUID, -1);
-		else {
-			if (!sock->bind) {
-				*(uint32_t*)ip = ptr->sin_addr.s_addr;
-				sock->bind = true;
-				sock->state = ST_SYN_SENT;
-				host->getIPAddr(ip_buf, host->getRoutingTable(ip));
-				printf("							>>>ip_buf 0x%x\n", *(uint32_t*)ip_buf);
-				sock->src_ip = ntohl(*(uint32_t*)ip_buf);
-				sock->src_port = 10000;
-			}
-			sock->dest_ip = ntohl(ptr->sin_addr.s_addr);
-			sock->dest_port = ntohs(ptr->sin_port);
-			
-			packet = this->allocatePacket(PACKETSIZE);
-			memset(TCPHeader, 0, 20);
-			*(uint32_t*)src_ip = htonl(sock->src_ip);
-			*(uint32_t*)dest_ip = htonl(sock->dest_ip);
-			*(uint16_t*)TCPHeader = htons(sock->src_port);
-			*(uint16_t*)(TCPHeader+2) = htons(sock->dest_port);
-			*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);
-			sock->seqnum += 1;
-			*(TCPHeader+12) = 0x50;
-			*(TCPHeader+13) = 0x02;
-			*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);
-
-			protocol = 6;
-			packet->writeData(14+9, &protocol, 1);
-			packet->writeData(14+12, src_ip, 4);
-			packet->writeData(14+16, dest_ip, 4);
-	
-			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
-			packet->writeData(14+20, TCPHeader, 20);
-
-			for (int i = 0; i < 20; i++) {
-				printf("%x\t", TCPHeader[i]);
-				if (i % 4 == 3)
-					printf("\n");
-			}
-			
-			this->block_connect.push_back(std::make_pair(sock, syscallUUID));
-			printf("										>>> CONNECT: sent SYN\n");
-			fflush(stdout);
-			this->sendPacket("IPv4", packet);
-			//this->freePacket(packet);
-		}
-
+		this->syscall_connect(syscallUUID, pid, param.param1_int, (struct sockaddr*)param.param2_ptr, param.param3_int);			
 		break;
 	case LISTEN:
 		//this->syscall_listen(syscallUUID, pid, param.param1_int, param.param2_int);
+		/*
 		sock = NULL;
 
 		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
@@ -228,11 +359,13 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 			this->connection_ACK[sock->fd] = std::list<struct connection_info*>();
 			this->returnSystemCall(syscallUUID, 0);
 		}
+		*/
 		break;
 	case ACCEPT:
 		//this->syscall_accept(syscallUUID, pid, param.param1_int,
 		//		static_cast<struct sockaddr*>(param.param2_ptr),
 		//		static_cast<socklen_t*>(param.param3_ptr));
+		/*
 		ptr = (struct sockaddr_in *)param.param2_ptr;
 		sock = NULL;
 
@@ -278,88 +411,28 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 				this->returnSystemCall(syscallUUID, new_socket->fd);
 			}
 		}
-
+		*/
 		break;
 	case BIND:
 		//this->syscall_bind(syscallUUID, pid, param.param1_int,
 		//		static_cast<struct sockaddr *>(param.param2_ptr),
 		//		(socklen_t) param.param3_int);
-		ptr = (struct sockaddr_in *)param.param2_ptr;
-		sock = NULL;
-
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if ((*it)->fd == param.param1_int) {
-				sock = *it;
-				break;
-			}
-		}
-		
-		if (sock == NULL) {
-//			printf("								>>> error: no socket\n");
-			ret = -1;
-		}
-		else {
-			if (sock->bind) {
-//				printf("									>>> error: double binding\n");
-				ret = -1;
-			}
-			else {
-				ret = 0;
-				for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-					if ((ptr->sin_addr.s_addr == 0 || (*it)->src_ip == 0 || ptr->sin_addr.s_addr == (*it)->src_ip) && ptr->sin_port == (*it)->src_port) {
-//						printf("											>>> error: bind rule violation\n");
-						ret = -1;
-						break;
-					}
-				}
-			}
-		}
-
-		if (!ret) {
-			sock->bind = true;
-			sock->src_ip = ptr->sin_addr.s_addr;
-			sock->src_port = ptr->sin_port;
-		}
-
+		ret = this->syscall_bind(pid, param.param1_int, (struct sockaddr *)param.param2_ptr, param.param3_int);
 		this->returnSystemCall(syscallUUID, ret);
 		break;
 	case GETSOCKNAME:
 		//this->syscall_getsockname(syscallUUID, pid, param.param1_int,
 		//		static_cast<struct sockaddr *>(param.param2_ptr),
 		//		static_cast<socklen_t*>(param.param3_ptr));
-		ptr = (struct sockaddr_in *)param.param2_ptr;
-		sock = NULL;
-
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if ((*it)->fd == param.param1_int) {
-				sock = *it;
-				break;
-			}
-		}
-
-		if (sock == NULL) {
-			for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
-				if ((*it)->fd == param.param1_int) {
-					sock = *it;
-					break;
-				}
-			}
-		}
-
-		if (sock == NULL)
-			ret = -1;
-		else {
-			ptr->sin_family = AF_INET;
-			ptr->sin_addr.s_addr = sock->src_ip;
-			ptr->sin_port = sock->src_port;
-			ret = 0;
-		}
+		ret = this->syscall_getsockname(pid, param.param1_int, (struct sockaddr *)param.param2_ptr, (socklen_t *)param.param3_ptr);
 		this->returnSystemCall(syscallUUID, ret);
 		break;
 	case GETPEERNAME:
 		//this->syscall_getpeername(syscallUUID, pid, param.param1_int,
 		//		static_cast<struct sockaddr *>(param.param2_ptr),
 		//		static_cast<socklen_t*>(param.param3_ptr));
+		ret = this->syscall_getpeername(pid, param.param1_int, (struct sockaddr *)param.param2_ptr, (socklen_t *)param.param3_ptr);
+		this->returnSystemCall(syscallUUID, ret);
 		break;
 	default:
 		assert(0);
@@ -369,6 +442,7 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 {
 	uint8_t src_ip[4], dest_ip[4], src_port[2], dest_port[2], bits, syn = 0x02, ack = 0x10, TCPHeader[20];
+	uint32_t seqnum, acknum;
 	Packet *new_packet;
 	struct socket_info* sock;
 
@@ -376,28 +450,33 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+16, dest_ip, 4);
 	packet->readData(14+20+0, src_port, 2);
 	packet->readData(14+20+2, dest_port, 2);
+	packet->readData(14+20+4, (uint8_t*)&acknum, 4);
 	packet->readData(14+20+13, &bits, 1);
-	packet->readData(14+20, TCPHeader, 20);
+//	packet->readData(14+20, TCPHeader, 20);
+
 /*
-	for (int i = 0; i < 20; i++) {
-		printf("%x\t", TCPHeader[i]);
-			if (i % 4 == 3)
-				printf("\n");
+	if ((bits & syn) && (bits & ack)) {
+		for (int i = 0; i < 20; i++) {
+			printf("%x\t", TCPHeader[i]);
+				if (i % 4 == 3)
+					printf("\n");
+		}
+		for (int i = 0; i < 4; i++) {
+			printf("%x\t", src_ip[i]);
+				if (i % 4 == 3)
+					printf("\n");
+		}
+		for (int i = 0; i < 20; i++) {
+			printf("%x\t", TCPHeader[i]);
+				if (i % 4 == 3)
+					printf("\n");
+		}
 	}
-	for (int i = 0; i < 4; i++) {
-		printf("%x\t", src_ip[i]);
-			if (i % 4 == 3)
-				printf("\n");
-	}
-	for (int i = 0; i < 20; i++) {
-		printf("%x\t", TCPHeader[i]);
-			if (i % 4 == 3)
-				printf("\n");
-	}			
 */
+
 	if (!(bits & ack)) {
-//		printf("										>>> SYN(0x%x) arrived\n", bits);
 		// only SYN, first step
+		/*
 		new_packet = this->clonePacket(packet);
 		bits = syn | ack;
 		
@@ -435,10 +514,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 //		printf("										>>> send SYNACK(0x%x)\n", bits);
 		this->sendPacket("IPv4", new_packet);
 		//this->freePacket(new_packet)
+		*/
 	}
 	else {
 		if (bits & syn) {
-//			printf("										>>> SYNACK arrived\n");
 			// SYNACK, second step
 			UUID uuid = 0;
 			new_packet = this->clonePacket(packet);
@@ -456,24 +535,33 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 
 			if (sock != NULL) {
-//				printf("										>>> trace CONNECT socket\n");
 				sock->state = ST_ESTABLISHED;
+				seqnum = htonl(sock->seqnum);
+				acknum = htonl(ntohl(acknum)+1);
+				sock->seqnum += 1;
+
+				new_packet->writeData(14+12, dest_ip, 4);
+				new_packet->writeData(14+16, src_ip, 4);
+				new_packet->writeData(14+20+0, dest_port, 2);
+				new_packet->writeData(14+20+2, src_port, 2);
+				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+				new_packet->writeData(14+20+13, &bits, 1);
+
+				new_packet->readData(14+20, TCPHeader, 20);
+				*(uint16_t*)(TCPHeader+16) = 0;
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+
+				new_packet->writeData(14+20, TCPHeader, 20);
+	
+				this->sendPacket("IPv4", new_packet);
 				this->returnSystemCall(uuid, 0);
 			}
-
-			new_packet->writeData(14+12, dest_ip, 4);
-			new_packet->writeData(14+16, src_ip, 4);
-			new_packet->writeData(14+20+0, dest_port, 2);
-			new_packet->writeData(14+20+2, src_port, 2);
-			new_packet->writeData(14+20+13, &bits, 1);
-
-//			printf("										>>> send ACK\n");
-			this->sendPacket("IPv4", new_packet);
 			//this->freePacket(new_packet);
 		}
 		else {
-//			printf("										>>> ACK arrived\n");
 			// only ACK, third step
+			/*
 			UUID uuid = 0;
 			struct socket_info* new_socket = NULL;
 			struct socket_info* listen_socket = NULL;
@@ -533,6 +621,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					}
 				}
 			}
+			*/
 		}
 	}
 }
