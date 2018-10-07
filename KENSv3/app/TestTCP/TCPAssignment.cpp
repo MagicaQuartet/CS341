@@ -156,7 +156,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		}
 	}
 
-	if (sock == NULL || sock->bind)
+	if (sock == NULL || sock->state == ST_LISTEN || sock->state == ST_SYN_SENT)
 		this->returnSystemCall(syscallUUID, -1);
 	else {
 		if (!sock->bind) {
@@ -477,7 +477,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 
 		if (sock != NULL) {
-			if (sock->state == ST_LISTEN) {
+			if (sock->state == ST_LISTEN || sock->state == ST_SYN_SENT) {
 				struct connection_info* conninfo;
 				conninfo = (struct connection_info*)calloc(sizeof(struct connection_info*), 1);
 	
