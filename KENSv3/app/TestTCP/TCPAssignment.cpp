@@ -186,14 +186,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
 		packet->writeData(14+20, TCPHeader, 20);
 
-//		for (int i = 0; i < 20; i++) {
-//			printf("%x\t", TCPHeader[i]);
-//			if (i % 4 == 3)
-//				printf("\n");
-//		}
-
 		this->block_connect.push_back(std::make_pair(sock, syscallUUID));
-		fflush(stdout);
 		this->sendPacket("IPv4", packet);
 		//this->freePacket(packet);
 	}
@@ -262,23 +255,21 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 		new_socket->dest_port = 0;
 		this->connect_socket_list.push_back(new_socket);
 
-		if (this->connection_ACK[sock->fd].empty()) {
-			printf("										>>> ACCEPT: no ACKed connection, BLOCKED\n");
+		if (this->connection_ACK[sock->listenUUID].empty()) {
 			this->block_accept.push_back(std::make_pair(sock, std::make_pair(syscallUUID, new_socket)));
 			this->block_accept_addr.push_back(std::make_pair(syscallUUID, ptr));
 		}
 		else {
-			printf("										>>> ACCEPT: ACKed connection found, CONNECTION COMPLETE\n");
-			new_socket->bind = true;
+			//new_socket->bind = true;
 			new_socket->state = ST_ESTABLISHED;
-			new_socket->dest_ip = this->connection_ACK[sock->fd].front()->client_ip;
-			new_socket->dest_port = this->connection_ACK[sock->fd].front()->client_port;
+			new_socket->dest_ip = this->connection_ACK[sock->listenUUID].front()->client_ip;
+			new_socket->dest_port = this->connection_ACK[sock->listenUUID].front()->client_port;
 			ptr->sin_family = AF_INET;
 			ptr->sin_addr.s_addr = new_socket->dest_ip;
 			ptr->sin_port = new_socket->dest_port;
 
 			//free(this->connection_ACK[sock->fd].front());
-			this->connection_ACK[sock->fd].pop_front();
+			this->connection_ACK[sock->listenUUID].pop_front();
 			this->returnSystemCall(syscallUUID, new_socket->fd);
 		}
 	}
@@ -302,19 +293,16 @@ int TCPAssignment::syscall_bind(int pid, int fd, struct sockaddr *addr, socklen_
 	}
 		
 	if (sock == NULL) {
-			printf("								>>> error: no socket\n");
 		ret = -1;
 	}
 	else {
 		if (sock->bind) {
-				printf("									>>> error: double binding\n");
 			ret = -1;
 		}
 		else {
 			ret = 0;
 			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
 				if ((ptr->sin_addr.s_addr == 0 || (*it)->src_ip == 0 || ptr->sin_addr.s_addr == (*it)->src_ip) && ptr->sin_port == (*it)->src_port) {
-					printf("											>>> error: bind rule violation\n");
 					ret = -1;
 					break;
 				}
@@ -384,7 +372,6 @@ int TCPAssignment::syscall_getpeername(int pid, int fd, struct sockaddr *addr, s
 	}
 
 	if (sock == NULL || sock->state != ST_ESTABLISHED) {
-		printf("												>>> GETPEERNAME: no such socket\n");
 		return -1;
 	}
 	else {
@@ -461,7 +448,8 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 
 void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 {
-	uint8_t src_ip[4], dest_ip[4], src_port[2], dest_port[2], bits, syn = 0x02, ack = 0x10, TCPHeader[20];
+	uint8_t src_ip[4], dest_ip[4], src_port[2], dest_port[2], TCPHeader[20];
+	uint8_t bits, syn = 0x02, ack = 0x10;
 	uint32_t seqnum, acknum;
 	Packet *new_packet;
 	struct socket_info* sock;
@@ -472,27 +460,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+2, dest_port, 2);
 	packet->readData(14+20+4, (uint8_t*)&acknum, 4);
 	packet->readData(14+20+13, &bits, 1);
-//	packet->readData(14+20, TCPHeader, 20);
-
-/*
-	if ((bits & syn) && (bits & ack)) {
-		for (int i = 0; i < 20; i++) {
-			printf("%x\t", TCPHeader[i]);
-				if (i % 4 == 3)
-					printf("\n");
-		}
-		for (int i = 0; i < 4; i++) {
-			printf("%x\t", src_ip[i]);
-				if (i % 4 == 3)
-					printf("\n");
-		}
-		for (int i = 0; i < 20; i++) {
-			printf("%x\t", TCPHeader[i]);
-				if (i % 4 == 3)
-					printf("\n");
-		}
-	}
-*/
 
 	if (!(bits & ack)) {
 		// SYN
@@ -518,32 +485,49 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				conninfo->client_port = *(uint16_t*)src_port;
 				conninfo->server_ip = *(uint32_t*)dest_ip;
 				conninfo->server_port = *(uint16_t*)dest_port;
-
+				
 				if (this->connection_SYN[sock->listenUUID].size() < sock->backlog) {
-					this->connection_SYN[sock->listenUUID].push_back(conninfo);
+					struct socket_info *connect_socket = NULL;
+					struct connection_info* acked_conninfo = NULL;
+
+					for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+						if ((*it)->state == ST_ESTABLISHED && (*it)->dest_ip == *(uint32_t*)src_ip && (*it)->dest_port == *(uint16_t*)src_port) {
+							connect_socket = *it;
+							break;
+						}
+					}
+
+					for (std::list<struct connection_info*>::iterator it=this->connection_ACK[sock->listenUUID].begin(); it!=this->connection_ACK[sock->listenUUID].end(); ++it) {
+						if ((*it)->client_ip == *(uint32_t*)src_ip && (*it)->client_port == *(uint16_t*)src_port) {
+							acked_conninfo = *it;
+							break;
+						}
+					}
+
+					if (connect_socket == NULL && acked_conninfo == NULL) {
+
+						this->connection_SYN[sock->listenUUID].push_back(conninfo);
+
+						seqnum = htonl(sock->seqnum);
+						sock->seqnum += 1;
+						acknum = htonl(ntohl(acknum)+1);
+
+						new_packet->writeData(14+12, dest_ip, 4);
+						new_packet->writeData(14+16, src_ip, 4);
+						new_packet->writeData(14+20+0, dest_port, 2);
+						new_packet->writeData(14+20+2, src_port, 2);
+						new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+						new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+						new_packet->writeData(14+20+13, &bits, 1);
+			
+						new_packet->readData(14+20, TCPHeader, 20);
+						*(uint16_t*)(TCPHeader+16) = 0;
+						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+	
+						new_packet->writeData(14+20, TCPHeader, 20);
+						this->sendPacket("IPv4", new_packet);
+					}
 				}
-
-				seqnum = htonl(sock->seqnum);
-				sock->seqnum += 1;
-				acknum = htonl(ntohl(acknum)+1);
-
-				new_packet->writeData(14+12, dest_ip, 4);
-				new_packet->writeData(14+16, src_ip, 4);
-				new_packet->writeData(14+20+0, dest_port, 2);
-				new_packet->writeData(14+20+2, src_port, 2);
-				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
-				new_packet->writeData(14+20+13, &bits, 1);
-		
-				new_packet->readData(14+20, TCPHeader, 20);
-				*(uint16_t*)(TCPHeader+16) = 0;
-				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
-
-				new_packet->writeData(14+20, TCPHeader, 20);
-				this->sendPacket("IPv4", new_packet);
-			}
-			else {
-				printf("																>>>>> maybe simultaneous?\n");
 			}
 		}	
 		//this->freePacket(new_packet)
@@ -606,9 +590,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 			}
 			
-			if (listen_socket != NULL) {
+			if (listen_socket != NULL && listen_socket->state == ST_LISTEN) {
 				for (std::list<struct connection_info*>::iterator it=this->connection_SYN[listen_socket->listenUUID].begin(); it!=this->connection_SYN[listen_socket->listenUUID].end(); ++it) {
-					if ((*it)->client_port == *(uint16_t*)src_port && (*(uint32_t*)src_ip == 0 || (*it)->client_ip == *(uint32_t*)src_ip)) {
+					if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
 						conninfo = *it;
 						this->connection_SYN[listen_socket->listenUUID].erase(it);
 						break;
@@ -628,9 +612,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		
 					if (sock != NULL) {
 						// blocked accept exists (backlog check in connection_SYN needed?)
+						new_socket->state = ST_ESTABLISHED;
 						new_socket->dest_ip = *(uint32_t*)src_ip;
 						new_socket->dest_port = *(uint16_t*)src_port;
-		
+
 						for (std::list<std::pair<UUID, struct sockaddr_in*>>::iterator it=block_accept_addr.begin(); it!=block_accept_addr.end(); ++it) {
 							if((*it).first == uuid) {
 								(*it).second->sin_family = AF_INET;
