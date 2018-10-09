@@ -23,19 +23,19 @@ namespace E
 {
 
 struct socket_info {
-	int fd;
-	int pid;
-	int listenUUID;
+	int fd;					// file descripter
+	int pid;				// id of process which created this socket
+	int listenUUID;			// syscallUUID of LISTEN (if passive open)
 
-	bool bind;
+	bool bind;				// bound or not
 	int state;
 
-	int seqnum;
+	int seqnum;				// sequence number
 	uint32_t backlog;
 	
-	uint32_t src_ip;
+	uint32_t src_ip;		// name of this socket
 	uint16_t src_port;
-	uint32_t dest_ip;
+	uint32_t dest_ip;		// name of peer
 	uint16_t dest_port;
 };
 
@@ -49,14 +49,14 @@ struct connection_info {
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
-	std::list<struct socket_info*> socket_list;
-	std::list<struct socket_info*> connect_socket_list;
-	std::list<std::pair<struct socket_info*, UUID>> block_connect;
-	std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>> block_accept;
-	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;
+	std::list<struct socket_info*> socket_list;														// all sockets except ones created when SYN_RCVD
+	std::list<struct socket_info*> connect_socket_list;												// sockets created when SYN_RCVD
+	std::list<std::pair<struct socket_info*, UUID>> block_connect;									// blocked CONNECT
+	std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>> block_accept;	// blocked ACCEPT
+	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;								// sockaddr to be filled
 
-	std::map<UUID, std::list<struct connection_info*>> connection_SYN;
-	std::map<UUID, std::list<struct connection_info*>> connection_ACK;
+	std::map<int, std::list<struct connection_info*>> connection_SYN;								// SYN request queue
+	std::map<int, std::list<struct connection_info*>> connection_ACK;								// ACK request queue
 private:
 	virtual void timerCallback(void* payload) final;
 
