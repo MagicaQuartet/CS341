@@ -166,7 +166,6 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		// implicit binding
 		if (!sock->bind) {
 			*(uint32_t*)dest_ip = ptr->sin_addr.s_addr;
-			sock->state = ST_SYN_SENT;
 			host->getIPAddr(src_ip, host->getRoutingTable(dest_ip));
 			sock->src_ip = *(uint32_t*)src_ip;
 			sock->src_port = htons(65535);
@@ -194,6 +193,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 
 		this->block_connect.push_back(std::make_pair(sock, syscallUUID));		
 		this->sendPacket("IPv4", packet);
+		sock->state = ST_SYN_SENT;
 	}
 }
 
@@ -506,7 +506,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 
 		if (sock != NULL) {
-			if (sock->state == ST_LISTEN || sock->state == ST_SYN_SENT) {
+			if (sock->state == ST_LISTEN) {
 				if (this->connection_SYN[sock->listenUUID].size() < sock->backlog) {
 					struct socket_info *connect_socket = NULL;
 					struct connection_info* acked_conninfo = NULL;
@@ -560,6 +560,37 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						this->sendPacket("IPv4", new_packet);
 					}
 				}
+			}
+			else if (sock->state == ST_SYN_SENT) {
+				struct connection_info* conninfo;
+				conninfo = (struct connection_info*)calloc(sizeof(struct connection_info*), 1);
+
+				conninfo->client_ip = *(uint32_t*)src_ip;
+				conninfo->client_port = *(uint16_t*)src_port;
+				conninfo->server_ip = *(uint32_t*)dest_ip;
+				conninfo->server_port = *(uint16_t*)dest_port;
+				
+				// send SYNACK packet to client
+				sock->seqnum -= 1;
+				seqnum = htonl(sock->seqnum);
+				sock->seqnum += 1;
+				acknum = htonl(ntohl(acknum)+1);
+
+				new_packet->writeData(14+12, dest_ip, 4);
+				new_packet->writeData(14+16, src_ip, 4);
+				new_packet->writeData(14+20+0, dest_port, 2);
+				new_packet->writeData(14+20+2, src_port, 2);
+				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+				new_packet->writeData(14+20+13, &bits, 1);
+			
+				new_packet->readData(14+20, TCPHeader, 20);
+				*(uint16_t*)(TCPHeader+16) = 0;
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+	
+				new_packet->writeData(14+20, TCPHeader, 20);
+				this->sendPacket("IPv4", new_packet);
+				sock->state = ST_SYN_RCVD;
 			}
 		}
 	}
