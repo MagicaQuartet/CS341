@@ -18,10 +18,16 @@
 #define PACKETSIZE 54
 #define WINDOWSIZE 1024
 
+#define FIN 0x01
+#define SYN 0x02
+#define ACK 0x10
+
 namespace E
 {
 
-enum {ST_CLOSED, ST_LISTEN, ST_SYN_SENT, ST_SYN_RCVD, ST_ESTABLISHED};		// states
+enum {ST_CLOSED, ST_LISTEN, ST_SYN_SENT, ST_SYN_RCVD, ST_ESTABLISHED,
+			ST_CLOSE_WAIT, ST_LAST_ACK,
+			ST_FIN_WAIT_1, ST_FIN_WAIT_2, ST_CLOSING, ST_TIME_WAIT};
 
 TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 		NetworkModule(this->getHostModuleName(), host->getNetworkSystem()),
@@ -477,7 +483,7 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 {
 	uint8_t src_ip[4], dest_ip[4], src_port[2], dest_port[2], TCPHeader[20];
-	uint8_t bits, syn = 0x02, ack = 0x10;
+	uint8_t bits;
 	uint32_t seqnum, acknum;
 	Packet *new_packet;
 	struct socket_info* sock;
@@ -489,11 +495,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+4, (uint8_t*)&acknum, 4);	// acknowledge number
 	packet->readData(14+20+13, &bits, 1);				// flag
 
-	if (!(bits & ack)) {
+	if (bits & SYN && ~bits & ACK && ~bits & FIN) {
 		// SYN
 		
 		new_packet = this->clonePacket(packet);
-		bits = syn | ack;
+		bits = SYN | ACK;
 		
 		sock = NULL;
 
@@ -594,113 +600,146 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}
 	}
-	else {
-		if (bits & syn) {
-			// SYNACK
-			UUID uuid = 0;
-			new_packet = this->clonePacket(packet);
-			bits = ack;
+	else if (bits & SYN && bits & ACK && ~bits & FIN) {
+		// SYNACK
+		UUID uuid = 0;
+		new_packet = this->clonePacket(packet);
+		bits = ACK;
 
-			sock = NULL;
+		sock = NULL;
 
-			// search for blocked CONNECT of receiving socket
-			for (std::list<std::pair<struct socket_info*, UUID>>::iterator it=this->block_connect.begin(); it!=this->block_connect.end(); ++it) {
-				if (((*it).first->src_ip == 0 || (*it).first->src_ip == *(uint32_t*)dest_ip) && (*it).first->src_port == *(uint16_t*)dest_port) {
-					sock = (*it).first;
-					uuid = (*it).second;
-					block_connect.erase(it);
-					break;
-				}
-			}
-
-			if (sock != NULL) {
-				// complete connection
-				sock->state = ST_ESTABLISHED;
-
-				// send ACK packet
-				seqnum = htonl(sock->seqnum);
-				acknum = htonl(ntohl(acknum)+1);
-				sock->seqnum += 1;
-
-				new_packet->writeData(14+12, dest_ip, 4);
-				new_packet->writeData(14+16, src_ip, 4);
-				new_packet->writeData(14+20+0, dest_port, 2);
-				new_packet->writeData(14+20+2, src_port, 2);
-				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
-				new_packet->writeData(14+20+13, &bits, 1);
-
-				new_packet->readData(14+20, TCPHeader, 20);
-				*(uint16_t*)(TCPHeader+16) = 0;
-				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
-
-				new_packet->writeData(14+20, TCPHeader, 20);
-	
-				this->sendPacket("IPv4", new_packet);
-				this->returnSystemCall(uuid, 0);
+		// search for blocked CONNECT of receiving socket
+		for (std::list<std::pair<struct socket_info*, UUID>>::iterator it=this->block_connect.begin(); it!=this->block_connect.end(); ++it) {
+			if (((*it).first->src_ip == 0 || (*it).first->src_ip == *(uint32_t*)dest_ip) && (*it).first->src_port == *(uint16_t*)dest_port) {
+				sock = (*it).first;
+				uuid = (*it).second;
+				block_connect.erase(it);
+				break;
 			}
 		}
-		else {
-			// ACK
-			UUID uuid = 0;
-			struct socket_info* new_socket = NULL;
-			struct socket_info* listen_socket = NULL;
-			struct connection_info* conninfo = NULL;
-			sock = NULL;
 
-			// search socket_list
-			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port && (*it)->state == ST_LISTEN) {
-					listen_socket = *it;
+		if (sock != NULL) {
+			// complete connection
+			sock->state = ST_ESTABLISHED;
+
+			// send ACK packet
+			seqnum = htonl(sock->seqnum);
+			acknum = htonl(ntohl(acknum)+1);
+			sock->seqnum += 1;
+
+			new_packet->writeData(14+12, dest_ip, 4);
+			new_packet->writeData(14+16, src_ip, 4);
+			new_packet->writeData(14+20+0, dest_port, 2);
+			new_packet->writeData(14+20+2, src_port, 2);
+			new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+			new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+			new_packet->writeData(14+20+13, &bits, 1);
+
+			new_packet->readData(14+20, TCPHeader, 20);
+			*(uint16_t*)(TCPHeader+16) = 0;
+			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+
+			new_packet->writeData(14+20, TCPHeader, 20);
+
+			this->sendPacket("IPv4", new_packet);
+			this->returnSystemCall(uuid, 0);
+		}
+	}
+	else if (~bits & SYN && bits & ACK && ~bits & FIN){
+		// ACK
+		UUID uuid = 0;
+		struct socket_info* new_socket = NULL;
+		struct socket_info* listen_socket = NULL;
+		struct connection_info* conninfo = NULL;
+		sock = NULL;
+
+		// search socket_list
+		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port && (*it)->state == ST_LISTEN) {
+				listen_socket = *it;
+				break;
+			}
+		}
+			
+		if (listen_socket != NULL && listen_socket->state == ST_LISTEN) {
+			// find previous SYN request and remove it
+			for (std::list<struct connection_info*>::iterator it=this->connection_SYN[listen_socket->listenUUID].begin(); it!=this->connection_SYN[listen_socket->listenUUID].end(); ++it) {
+				if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
+					conninfo = *it;
+					this->connection_SYN[listen_socket->listenUUID].erase(it);
 					break;
 				}
 			}
-			
-			if (listen_socket != NULL && listen_socket->state == ST_LISTEN) {
-				// find previous SYN request and remove it
-				for (std::list<struct connection_info*>::iterator it=this->connection_SYN[listen_socket->listenUUID].begin(); it!=this->connection_SYN[listen_socket->listenUUID].end(); ++it) {
-					if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
-						conninfo = *it;
-						this->connection_SYN[listen_socket->listenUUID].erase(it);
+				
+			if (conninfo != NULL) {
+				// search block_accept
+				for (std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>>::iterator it=this->block_accept.begin(); it!=this->block_accept.end(); ++it) {
+					if (((*it).first->src_ip == 0 || (*it).first->src_ip == *(uint32_t*)dest_ip) && (*it).first->src_port == *(uint16_t*)dest_port) {
+						sock = (*it).first;
+						uuid = (*it).second.first;
+						new_socket = (*it).second.second;
+						this->block_accept.erase(it);
 						break;
 					}
 				}
-				
-				if (conninfo != NULL) {
-					// search block_accept
-					for (std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>>::iterator it=this->block_accept.begin(); it!=this->block_accept.end(); ++it) {
-						if (((*it).first->src_ip == 0 || (*it).first->src_ip == *(uint32_t*)dest_ip) && (*it).first->src_port == *(uint16_t*)dest_port) {
-							sock = (*it).first;
-							uuid = (*it).second.first;
-							new_socket = (*it).second.second;
-							this->block_accept.erase(it);
+		
+				if (sock != NULL) {
+					// blocked accept exists
+					new_socket->state = ST_ESTABLISHED;
+					new_socket->dest_ip = *(uint32_t*)src_ip;
+					new_socket->dest_port = *(uint16_t*)src_port;
+
+					for (std::list<std::pair<UUID, struct sockaddr_in*>>::iterator it=block_accept_addr.begin(); it!=block_accept_addr.end(); ++it) {
+						if((*it).first == uuid) {
+							(*it).second->sin_family = AF_INET;
+							(*it).second->sin_addr.s_addr = new_socket->dest_ip;
+							(*it).second->sin_port = new_socket->dest_port;
 							break;
 						}
 					}
-		
-					if (sock != NULL) {
-						// blocked accept exists
-						new_socket->state = ST_ESTABLISHED;
-						new_socket->dest_ip = *(uint32_t*)src_ip;
-						new_socket->dest_port = *(uint16_t*)src_port;
-
-						for (std::list<std::pair<UUID, struct sockaddr_in*>>::iterator it=block_accept_addr.begin(); it!=block_accept_addr.end(); ++it) {
-							if((*it).first == uuid) {
-								(*it).second->sin_family = AF_INET;
-								(*it).second->sin_addr.s_addr = new_socket->dest_ip;
-								(*it).second->sin_port = new_socket->dest_port;
-								break;
-							}
-						}
 						
-						// unblock
-						this->returnSystemCall(uuid, new_socket->fd);
-					}
-					else {
-						// no blocked accept
-						this->connection_ACK[listen_socket->listenUUID].push_back(conninfo);	
-					}
+					// unblock
+					this->returnSystemCall(uuid, new_socket->fd);
 				}
+				else {
+					// no blocked accept
+					this->connection_ACK[listen_socket->listenUUID].push_back(conninfo);	
+				}
+			}
+		}
+	}
+	else if (~bits & SYN && ~bits & ACK && bits & FIN) {
+		// FIN
+		sock = NULL;
+		
+		// search socket_list
+		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+				sock = *it;
+				break;
+			}
+		}
+		
+		if (sock == NULL) {
+			// search connect_socket_list
+			for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+					sock = *it;
+					break;
+				}
+			}
+		}
+	
+		if (sock != NULL) {
+			if (sock->state == ST_ESTABLISHED) {
+				// start passive close
+
+			}
+			else if (sock->state == ST_FIN_WAIT_1) {
+				
+			}
+			else if (sock->state == ST_FIN_WAIT_2) {
+
 			}
 		}
 	}
