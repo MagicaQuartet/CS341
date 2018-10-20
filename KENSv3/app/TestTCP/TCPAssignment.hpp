@@ -51,6 +51,7 @@ class TCPAssignment : public HostModule, public NetworkModule, public SystemCall
 private:
 	std::list<struct socket_info*> socket_list;														// all sockets except ones created when SYN_RCVD
 	std::list<struct socket_info*> connect_socket_list;												// sockets created when SYN_RCVD
+	std::list<struct socket_info*> closed_socket_list;
 	std::list<std::pair<struct socket_info*, UUID>> block_connect;									// blocked CONNECT
 	std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>> block_accept;	// blocked ACCEPT
 	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;								// sockaddr to be filled

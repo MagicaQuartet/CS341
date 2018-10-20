@@ -146,9 +146,10 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 	}
 
 	if (sock != NULL) {
-		if (sock->state == ST_CLOSE_WAIT) {
-			Packet *packet;
-			uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
+		Packet *packet;
+		uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
+
+		if (sock->state == ST_CLOSE_WAIT || sock->state == ST_ESTABLISHED) {
 			sock->state = ST_LAST_ACK;
 
 			packet = this->allocatePacket(PACKETSIZE);
@@ -171,13 +172,31 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 		}
 		else if (sock->state == ST_ESTABLISHED) {
 			sock->state = ST_FIN_WAIT_1;
+
+			packet = this->allocatePacket(PACKETSIZE);
+			memset(TCPHeader, 0, 20);
+			*(uint32_t*)src_ip = sock->src_ip;
+			*(uint32_t*)dest_ip = sock->dest_ip;
+			*(uint16_t*)TCPHeader = sock->src_port;				// source port
+			*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
+			*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);	// sequence number
+			*(TCPHeader+12) = 0x50;								// header size in 4bytes
+			*(TCPHeader+13) = FIN;								// flag (FIN)
+			*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);		// window size
+			packet->writeData(14+12, src_ip, 4);
+			packet->writeData(14+16, dest_ip, 4);
+	
+			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
+			packet->writeData(14+20, TCPHeader, 20);
+
+			this->sendPacket("IPv4", packet);
 		}
 
-		free(*it);
-		if (in_connect)
-			this->connect_socket_list.erase(it);
-		else
-			this->socket_list.erase(it);
+		//free(*it);
+		//if (in_connect)
+		//	this->connect_socket_list.erase(it);
+		//else
+		//	this->socket_list.erase(it);
 	}
 }
 
@@ -682,24 +701,31 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		// ACK
 		UUID uuid = 0;
 		struct socket_info* new_socket = NULL;
-		struct socket_info* listen_socket = NULL;
+		struct socket_info* normal_socket = NULL;
+		struct socket_info* connect_socket = NULL;
 		struct connection_info* conninfo = NULL;
 		sock = NULL;
 
-		// search socket_list
+		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+			 	connect_socket = *it;
+				break;
+			}
+		}
+		
 		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port && (*it)->state == ST_LISTEN) {
-				listen_socket = *it;
+			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+				normal_socket = *it;
 				break;
 			}
 		}
 			
-		if (listen_socket != NULL && listen_socket->state == ST_LISTEN) {
+		if ((connect_socket != NULL && connect_socket->state == ST_SYN_RCVD) || normal_socket->state == ST_LISTEN) {
 			// find previous SYN request and remove it
-			for (std::list<struct connection_info*>::iterator it=this->connection_SYN[listen_socket->listenUUID].begin(); it!=this->connection_SYN[listen_socket->listenUUID].end(); ++it) {
+			for (std::list<struct connection_info*>::iterator it=this->connection_SYN[normal_socket->listenUUID].begin(); it!=this->connection_SYN[normal_socket->listenUUID].end(); ++it) {
 				if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
 					conninfo = *it;
-					this->connection_SYN[listen_socket->listenUUID].erase(it);
+					this->connection_SYN[normal_socket->listenUUID].erase(it);
 					break;
 				}
 			}
@@ -736,9 +762,18 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 				else {
 					// no blocked accept
-					this->connection_ACK[listen_socket->listenUUID].push_back(conninfo);	
+					this->connection_ACK[normal_socket->listenUUID].push_back(conninfo);	
 				}
 			}
+		}
+		else if (normal_socket->state == ST_LAST_ACK) {
+			
+		}
+		else if (normal_socket->state == ST_FIN_WAIT_1) {
+
+		}
+		else if (normal_socket->state == ST_CLOSING) {
+
 		}
 	}
 	else if (~bits & SYN && ~bits & ACK && bits & FIN) {
