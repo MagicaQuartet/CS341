@@ -120,31 +120,45 @@ int TCPAssignment::syscall_socket(int pid) {
 
 void TCPAssignment::syscall_close(int pid, int fd) {
 	this->removeFileDescriptor(pid, fd);
-	std::list <struct socket_info*>::iterator it;
-	struct socket_info* normal_socket, *connect_socket, *sock;
-
+	std::list <struct socket_info*>::iterator normal_it, connect_it;
+	struct socket_info* normal_socket, *connect_socket, *closed_socket, *sock;
+	
 	normal_socket = NULL;
 	connect_socket = NULL;
+	closed_socket = NULL;
 	
-	for (it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-		if ((*it)->fd == fd && (*it)->pid == pid) {
-			normal_socket = *it;
+	for (normal_it=this->socket_list.begin(); normal_it!=this->socket_list.end(); ++normal_it) {
+		if ((*normal_it)->fd == fd && (*normal_it)->pid == pid) {
+			normal_socket = *normal_it;
 			break;
 		}
 	}
 
-	for (it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+	for (connect_it=this->connect_socket_list.begin(); connect_it!=this->connect_socket_list.end(); ++connect_it) {
+		if ((*connect_it)->fd == fd && (*connect_it)->pid == pid) {
+			connect_socket = *connect_it;
+			break;
+		}
+	}
+	
+	for (std::list<struct socket_info*>::iterator it=this->closed_socket_list.begin(); it!=this->closed_socket_list.end(); ++it) {
 		if ((*it)->fd == fd && (*it)->pid == pid) {
-			connect_socket = *it;
+			closed_socket = *it;
 			break;
 		}
 	}
 
-	if (connect_socket != NULL || normal_socket->state == ST_ESTABLISHED) {
-		if (connect_socket != NULL)
-			sock = connect_socket;
-		else
-			sock = normal_socket;
+	if (closed_socket == NULL && (connect_socket != NULL || normal_socket->state == ST_ESTABLISHED)) {
+		if (connect_socket != NULL) {
+			// this->connect_socket_list.erase(connect_it);
+			this->closed_socket_list.push_back(connect_socket);
+			// sock = connect_socket;
+		}
+		else {
+			// this->socket_list.erase(normal_it);
+			this->closed_socket_list.push_back(normal_socket);
+			// sock = normal_socket;
+		}
 
 		Packet *packet;
 		uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
@@ -173,12 +187,9 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 
 			this->sendPacket("IPv4", packet);
 		}
-
-		//if (in_connect)
-		//	this->connect_socket_list.erase(it);
-		//else
-		//	this->socket_list.erase(it);
 	}
+	else
+		this->socket_list.erase(normal_it);
 }
 
 /* CONNECT */
@@ -680,6 +691,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	}
 	else if (~bits & SYN && bits & ACK && ~bits & FIN){
 		// ACK
+
 		UUID uuid = 0;
 		struct socket_info* new_socket = NULL;
 		struct socket_info* normal_socket = NULL;
