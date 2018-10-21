@@ -99,6 +99,7 @@ int TCPAssignment::syscall_socket(int pid) {
 	sock->fd = fd;
 	sock->pid = pid;
 	sock->listenUUID = 0;
+	sock->parent = sock;
 
 	sock->bind = false;
 	sock->state = ST_CLOSED;
@@ -149,7 +150,7 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 	}
 	
 	if (closed_socket == NULL) {
-		if (connect_socket != NULL || (normal_socket != NULL && normal_socket->state == ST_ESTABLISHED)) {
+		if (connect_socket != NULL || (normal_socket != NULL && (normal_socket->state == ST_ESTABLISHED || normal_socket->state == ST_CLOSE_WAIT))) {
 			if (connect_socket != NULL) {
 				// this->connect_socket_list.erase(connect_it);
 				this->closed_socket_list.push_back(connect_socket);
@@ -178,7 +179,7 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 				*(uint32_t*)dest_ip = sock->dest_ip;
 				*(uint16_t*)TCPHeader = sock->src_port;				// source port
 				*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
-				*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);	// sequence number
+				*(uint32_t*)(TCPHeader+4) = htonl(sock->parent->seqnum);	// sequence number
 				*(TCPHeader+12) = 0x50;								// header size in 4bytes
 				*(TCPHeader+13) = FIN;								// flag (FIN)
 				*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);		// window size
@@ -189,6 +190,7 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 				packet->writeData(14+20, TCPHeader, 20);
 
 				this->sendPacket("IPv4", packet);
+				sock->parent->seqnum += 1;
 			}
 		}
 		else {
@@ -242,7 +244,7 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		*(uint32_t*)dest_ip = sock->dest_ip;
 		*(uint16_t*)TCPHeader = sock->src_port;				// source port
 		*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
-		*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);	// sequence number
+		*(uint32_t*)(TCPHeader+4) = htonl(sock->parent->seqnum);	// sequence number
 		*(TCPHeader+12) = 0x50;								// header size in 4bytes
 		*(TCPHeader+13) = SYN;								// flag (SYN)
 		*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);		// window size
@@ -315,6 +317,7 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 		new_socket->fd = fd;
 		new_socket->pid = pid;
 		new_socket->listenUUID = 0;
+		new_socket->parent = sock;
 
 		new_socket->state = ST_SYN_RCVD;
 		new_socket->bind = false;
@@ -604,7 +607,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						this->connection_SYN[sock->listenUUID].push_back(conninfo);
 
 						// send SYNACK packet to client
-						seqnum = htonl(sock->seqnum);
+						seqnum = htonl(sock->parent->seqnum);
 						acknum = htonl(ntohl(acknum)+1);
 
 						new_packet->writeData(14+12, dest_ip, 4);
@@ -634,7 +637,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				conninfo->server_port = *(uint16_t*)dest_port;
 				
 				// send SYNACK packet to client
-				seqnum = htonl(sock->seqnum);
+				seqnum = htonl(sock->parent->seqnum);
 				acknum = htonl(ntohl(acknum)+1);
 
 				new_packet->writeData(14+12, dest_ip, 4);
@@ -678,8 +681,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			sock->state = ST_ESTABLISHED;
 
 			// send ACK packet
-			sock->seqnum += 1;
-			seqnum = htonl(sock->seqnum);
+			sock->parent->seqnum += 1;
+			seqnum = htonl(sock->parent->seqnum);
 			acknum = htonl(ntohl(acknum)+1);
 
 			new_packet->writeData(14+12, dest_ip, 4);
@@ -706,6 +709,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		UUID uuid = 0;
 		struct socket_info* new_socket = NULL;
 		struct socket_info* normal_socket = NULL;
+		struct socket_info* connect_socket = NULL;
 		struct connection_info* conninfo = NULL;
 		sock = NULL;
 
@@ -715,8 +719,21 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				break;
 			}
 		}
+		
+		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+			if ((*it)->parent->fd == normal_socket->fd && (*it)->dest_ip == *(uint32_t*)src_ip && (*it)->dest_port == *(uint16_t*)src_port) {
+				connect_socket = *it;
+				break;
+			}
+		}
 			
-		if (normal_socket->state == ST_LISTEN) {
+		normal_socket->parent->seqnum += 1;
+
+		if (normal_socket->state == ST_LISTEN && connect_socket != NULL) {
+			printf("									>>> ACK of FIN!!!!\n");
+			normal_socket->parent->seqnum -= 1;
+		}
+		if (normal_socket->state == ST_LISTEN && connect_socket == NULL) {
 			// find previous SYN request and remove it
 			for (std::list<struct connection_info*>::iterator it=this->connection_SYN[normal_socket->listenUUID].begin(); it!=this->connection_SYN[normal_socket->listenUUID].end(); ++it) {
 				if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
@@ -737,7 +754,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						break;
 					}
 				}
-		
+			
 				if (sock != NULL) {
 					// blocked accept exists
 					new_socket->state = ST_ESTABLISHED;
@@ -754,7 +771,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							break;
 						}
 					}
-						
+							
 					// unblock
 					this->returnSystemCall(uuid, new_socket->fd);
 				}
@@ -773,9 +790,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if (normal_socket->state == ST_FIN_WAIT_1) {
 			normal_socket->state = ST_FIN_WAIT_2;
+			normal_socket->parent->seqnum -= 1;
 		}
 		else if (normal_socket->state == ST_CLOSING) {
 			normal_socket->state = ST_TIME_WAIT;
+			normal_socket->parent->seqnum -= 1;
 			// TODO: timer
 		}
 	}
@@ -810,8 +829,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			if (normal_socket->state == ST_LISTEN) {
 				if (connect_socket == NULL) {
 					bits = ACK;
-					normal_socket->seqnum += 1;
-					seqnum = htonl(normal_socket->seqnum);
+					seqnum = htonl(normal_socket->parent->seqnum);
 					acknum = htonl(ntohl(acknum)+1);
 				
 					new_packet->writeData(14+12, dest_ip, 4);
@@ -840,8 +858,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							connect_socket->state = ST_TIME_WAIT;
 
 						bits = ACK;
-						connect_socket->seqnum += 1;
-						seqnum = htonl(connect_socket->seqnum);
+						seqnum = htonl(connect_socket->parent->seqnum);
 						acknum = htonl(ntohl(acknum)+1);
 				
 						new_packet->writeData(14+12, dest_ip, 4);
@@ -875,8 +892,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					normal_socket->state = ST_TIME_WAIT;
 
 				bits = ACK;
-				normal_socket->seqnum += 1;
-				seqnum = htonl(normal_socket->seqnum);
+				seqnum = htonl(normal_socket->parent->seqnum);
 				acknum = htonl(ntohl(acknum)+1);
 				
 				new_packet->writeData(14+12, dest_ip, 4);

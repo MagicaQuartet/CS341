@@ -26,6 +26,7 @@ struct socket_info {
 	int fd;					// file descripter
 	int pid;				// id of process which created this socket
 	int listenUUID;			// syscallUUID of LISTEN (if passive open)
+	struct socket_info* parent;
 
 	bool bind;				// bound or not
 	int state;
