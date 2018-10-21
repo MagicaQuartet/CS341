@@ -333,6 +333,7 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 			this->block_accept_addr.push_back(std::make_pair(syscallUUID, ptr));
 		}
 		else {	// otherwise, get a ACK request and fill new_socket and addr. no block.
+			printf("									>>> ACCEPT LATER!!!!\n");
 			new_socket->state = ST_ESTABLISHED;
 			new_socket->dest_ip = this->connection_ACK[sock->listenUUID].front()->client_ip;
 			new_socket->dest_port = this->connection_ACK[sock->listenUUID].front()->client_port;
@@ -701,23 +702,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	}
 	else if (~bits & SYN && bits & ACK && ~bits & FIN){
 		// ACK
-
+		printf("												>>> ACK!!!!\n");
 		UUID uuid = 0;
 		struct socket_info* new_socket = NULL;
 		struct socket_info* normal_socket = NULL;
-		struct socket_info* connect_socket = NULL;
 		struct connection_info* conninfo = NULL;
 		sock = NULL;
 
-		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
-			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
-				if ((*it)->src_ip == 0)
-					(*it)->src_ip = *(uint32_t*)dest_ip;
-			 	connect_socket = *it;
-				break;
-			}
-		}
-		
 		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
 			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
 				normal_socket = *it;
@@ -725,7 +716,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}
 			
-		if ((connect_socket != NULL && connect_socket->state == ST_SYN_RCVD) || normal_socket->state == ST_LISTEN) {
+		if (normal_socket->state == ST_LISTEN) {
 			// find previous SYN request and remove it
 			for (std::list<struct connection_info*>::iterator it=this->connection_SYN[normal_socket->listenUUID].begin(); it!=this->connection_SYN[normal_socket->listenUUID].end(); ++it) {
 				if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
@@ -734,7 +725,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					break;
 				}
 			}
-				
+
 			if (conninfo != NULL) {
 				// search block_accept
 				for (std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>>::iterator it=this->block_accept.begin(); it!=this->block_accept.end(); ++it) {
@@ -752,6 +743,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					new_socket->state = ST_ESTABLISHED;
 					new_socket->dest_ip = *(uint32_t*)src_ip;
 					new_socket->dest_port = *(uint16_t*)src_port;
+					new_socket->src_ip = *(uint32_t*)dest_ip;
+					new_socket->src_port = *(uint16_t*)dest_port;
 
 					for (std::list<std::pair<UUID, struct sockaddr_in*>>::iterator it=block_accept_addr.begin(); it!=block_accept_addr.end(); ++it) {
 						if((*it).first == uuid) {
@@ -771,6 +764,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 			}
 		}
+		else if (normal_socket->state == ST_ESTABLISHED) {
+			normal_socket->state = ST_ESTABLISHED;
+		}
 		else if (normal_socket->state == ST_LAST_ACK) {
 			// deletion from socket_list may be needed
 			normal_socket->state = ST_CLOSED;
@@ -785,41 +781,102 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	}
 	else if (~bits & SYN && ~bits & ACK && bits & FIN) {
 		// FIN
-		sock = NULL;
+		printf("																				>>> FIN!!!\n");
+		
+		struct socket_info* normal_socket, *connect_socket;
+
+		normal_socket = NULL;
+		connect_socket = NULL;
 		
 		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
 			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
 				if ((*it)->src_ip == 0)
 					(*it)->src_ip = *(uint32_t*)dest_ip;
-				sock = *it;
+				printf("									>>> connect_socket (%d)!!\n", (*it)->state);
+				connect_socket = *it;
 				break;
 			}
 		}
 		
-		if (sock == NULL) {
-			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
-				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
-					sock = *it;
-					break;
-				}
+		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+				normal_socket = *it;
+				break;
 			}
 		}
 	
-		if (sock != NULL) {
-			if (sock->state == ST_ESTABLISHED || sock->state == ST_FIN_WAIT_1 || sock->state == ST_FIN_WAIT_2) {
-				printf("								>>> socket 0x%x:%d\n", sock->src_ip, sock->src_port);
-				new_packet = this->clonePacket(packet);
+		if (normal_socket != NULL) {
+			new_packet = this->clonePacket(packet);
+			if (normal_socket->state == ST_LISTEN) {
+				if (connect_socket == NULL) {
+					bits = ACK;
+					normal_socket->seqnum += 1;
+					seqnum = htonl(normal_socket->seqnum);
+					acknum = htonl(ntohl(acknum)+1);
+				
+					new_packet->writeData(14+12, dest_ip, 4);
+					new_packet->writeData(14+16, src_ip, 4);
+					new_packet->writeData(14+20+0, dest_port, 2);
+					new_packet->writeData(14+20+2, src_port, 2);
+					new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+					new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+					new_packet->writeData(14+20+13, &bits, 1);
 
-				if (sock->state == ST_ESTABLISHED)
-					sock->state = ST_CLOSE_WAIT;
-				else if (sock->state == ST_FIN_WAIT_1)
-					sock->state = ST_CLOSING;
+					new_packet->readData(14+20, TCPHeader, 20);
+					*(uint16_t*)(TCPHeader+16) = 0;
+					*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+
+					new_packet->writeData(14+20, TCPHeader, 20);
+
+					this->sendPacket("IPv4", new_packet);
+				}
+				else {
+					if (connect_socket->state == ST_ESTABLISHED || connect_socket->state == ST_FIN_WAIT_1 || connect_socket->state == ST_FIN_WAIT_2) {
+						if (connect_socket->state == ST_ESTABLISHED)
+							connect_socket->state = ST_CLOSE_WAIT;
+						else if (connect_socket->state == ST_FIN_WAIT_1)
+							connect_socket->state = ST_CLOSING;
+						else
+							connect_socket->state = ST_TIME_WAIT;
+
+						bits = ACK;
+						connect_socket->seqnum += 1;
+						seqnum = htonl(connect_socket->seqnum);
+						acknum = htonl(ntohl(acknum)+1);
+				
+						new_packet->writeData(14+12, dest_ip, 4);
+						new_packet->writeData(14+16, src_ip, 4);
+						new_packet->writeData(14+20+0, dest_port, 2);
+						new_packet->writeData(14+20+2, src_port, 2);
+						new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
+						new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+						new_packet->writeData(14+20+13, &bits, 1);
+
+						new_packet->readData(14+20, TCPHeader, 20);
+						*(uint16_t*)(TCPHeader+16) = 0;
+						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+
+						new_packet->writeData(14+20, TCPHeader, 20);
+
+						this->sendPacket("IPv4", new_packet);
+
+						if (connect_socket->state == ST_TIME_WAIT) {
+							// TODO: timer
+						}
+					}
+				}
+			}
+			else if (normal_socket->state == ST_ESTABLISHED || normal_socket->state == ST_FIN_WAIT_1 || normal_socket->state == ST_FIN_WAIT_2) {
+				if (normal_socket->state == ST_ESTABLISHED)
+					normal_socket->state = ST_CLOSE_WAIT;
+				else if (normal_socket->state == ST_FIN_WAIT_1)
+					normal_socket->state = ST_CLOSING;
 				else
-					sock->state = ST_TIME_WAIT;
+					normal_socket->state = ST_TIME_WAIT;
 
 				bits = ACK;
-				sock->seqnum += 1;
-				seqnum = htonl(sock->seqnum);
+				normal_socket->seqnum += 1;
+				seqnum = htonl(normal_socket->seqnum);
 				acknum = htonl(ntohl(acknum)+1);
 				
 				new_packet->writeData(14+12, dest_ip, 4);
@@ -838,7 +895,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 				this->sendPacket("IPv4", new_packet);
 
-				if (sock->state == ST_TIME_WAIT) {
+				if (normal_socket->state == ST_TIME_WAIT) {
 					// TODO: timer
 				}
 			}
