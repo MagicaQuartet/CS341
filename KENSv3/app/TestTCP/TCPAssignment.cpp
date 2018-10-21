@@ -16,7 +16,7 @@
 #include "TCPAssignment.hpp"
 
 #define PACKETSIZE 54
-#define WINDOWSIZE 1024
+#define WINDOWSIZE 51200
 
 #define FIN 0x01
 #define SYN 0x02
