@@ -23,20 +23,21 @@ namespace E
 {
 
 struct socket_info {
-	int fd;					// file descripter
-	int pid;				// id of process which created this socket
-	int listenUUID;			// syscallUUID of LISTEN (if passive open)
-	struct socket_info* parent;
+	int fd;													// file descripter
+	int pid;												// id of process which created this socket
+	int listenUUID;									// syscallUUID of LISTEN (if passive open)
+	struct socket_info* parent;			// if created during accept(), the listening socket. otherwise, itself.
 
-	bool bind;				// bound or not
+	bool bind;											// bound or not
 	int state;
 
-	std::map<std::pair<uint32_t, uint16_t>, int> seqnum;				// sequence number
+	std::map<std::pair<uint32_t, uint16_t>, int> seqnum;				// sequence number for each connection
+																															// | (<destination ip>, <destination port>) can distinguish every connection
 	uint32_t backlog;
 	
-	uint32_t src_ip;		// name of this socket
+	uint32_t src_ip;			// name of this socket
 	uint16_t src_port;
-	uint32_t dest_ip;		// name of peer
+	uint32_t dest_ip;			// name of peer
 	uint16_t dest_port;
 };
 
@@ -51,11 +52,11 @@ class TCPAssignment : public HostModule, public NetworkModule, public SystemCall
 {
 private:
 	std::list<struct socket_info*> socket_list;														// all sockets except ones created when SYN_RCVD
-	std::list<struct socket_info*> connect_socket_list;												// sockets created when SYN_RCVD
-	std::list<struct socket_info*> closed_socket_list;
+	std::list<struct socket_info*> connect_socket_list;										// sockets created when SYN_RCVD
+	std::list<struct socket_info*> closed_socket_list;										// (maybe not useful)
 	std::list<std::pair<struct socket_info*, UUID>> block_connect;									// blocked CONNECT
 	std::list<std::pair<struct socket_info*, std::pair<UUID, struct socket_info*>>> block_accept;	// blocked ACCEPT
-	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;								// sockaddr to be filled
+	std::list<std::pair<UUID, struct sockaddr_in*>> block_accept_addr;							// sockaddr to be filled
 
 	std::map<int, std::list<struct connection_info*>> connection_SYN;								// SYN request queue
 	std::map<int, std::list<struct connection_info*>> connection_ACK;								// ACK request queue
