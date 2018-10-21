@@ -31,7 +31,7 @@ struct socket_info {
 	bool bind;				// bound or not
 	int state;
 
-	int seqnum;				// sequence number
+	std::map<std::pair<uint32_t, uint16_t>, int> seqnum;				// sequence number
 	uint32_t backlog;
 	
 	uint32_t src_ip;		// name of this socket
