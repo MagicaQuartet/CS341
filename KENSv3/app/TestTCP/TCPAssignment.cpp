@@ -147,49 +147,57 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 			break;
 		}
 	}
+	
+	if (closed_socket == NULL) {
+		if (connect_socket != NULL || (normal_socket != NULL && normal_socket->state == ST_ESTABLISHED)) {
+			if (connect_socket != NULL) {
+				// this->connect_socket_list.erase(connect_it);
+				this->closed_socket_list.push_back(connect_socket);
+				sock = connect_socket;
+			}
+			else {
+				// this->socket_list.erase(normal_it);
+				this->closed_socket_list.push_back(normal_socket);
+				sock = normal_socket;
+			}
+	
+			Packet *packet;
+			uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
 
-	if (closed_socket == NULL && (connect_socket != NULL || normal_socket->state == ST_ESTABLISHED)) {
-		if (connect_socket != NULL) {
-			// this->connect_socket_list.erase(connect_it);
-			this->closed_socket_list.push_back(connect_socket);
-			// sock = connect_socket;
+			if (sock->state == ST_CLOSE_WAIT || sock->state == ST_ESTABLISHED) {
+				if (sock->state == ST_CLOSE_WAIT)
+					sock->state = ST_LAST_ACK;
+				else
+					sock->state = ST_FIN_WAIT_1;
+
+				//printf("													>>> src_ip 0x%x\n", sock->src_ip);
+
+				packet = this->allocatePacket(PACKETSIZE);
+				memset(TCPHeader, 0, 20);
+				*(uint32_t*)src_ip = sock->src_ip;
+				*(uint32_t*)dest_ip = sock->dest_ip;
+				*(uint16_t*)TCPHeader = sock->src_port;				// source port
+				*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
+				*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);	// sequence number
+				*(TCPHeader+12) = 0x50;								// header size in 4bytes
+				*(TCPHeader+13) = FIN;								// flag (FIN)
+				*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);		// window size
+				packet->writeData(14+12, src_ip, 4);
+				packet->writeData(14+16, dest_ip, 4);
+			
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
+				packet->writeData(14+20, TCPHeader, 20);
+
+				this->sendPacket("IPv4", packet);
+			}
 		}
 		else {
-			// this->socket_list.erase(normal_it);
-			this->closed_socket_list.push_back(normal_socket);
-			// sock = normal_socket;
-		}
-
-		Packet *packet;
-		uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
-
-		if (sock->state == ST_CLOSE_WAIT || sock->state == ST_ESTABLISHED) {
-			if (sock->state == ST_CLOSE_WAIT)
-				sock->state = ST_LAST_ACK;
-			else
-				sock->state = ST_FIN_WAIT_1;
-
-			packet = this->allocatePacket(PACKETSIZE);
-			memset(TCPHeader, 0, 20);
-			*(uint32_t*)src_ip = sock->src_ip;
-			*(uint32_t*)dest_ip = sock->dest_ip;
-			*(uint16_t*)TCPHeader = sock->src_port;				// source port
-			*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
-			*(uint32_t*)(TCPHeader+4) = htonl(sock->seqnum);	// sequence number
-			*(TCPHeader+12) = 0x50;								// header size in 4bytes
-			*(TCPHeader+13) = FIN;								// flag (FIN)
-			*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);		// window size
-			packet->writeData(14+12, src_ip, 4);
-			packet->writeData(14+16, dest_ip, 4);
-	
-			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
-			packet->writeData(14+20, TCPHeader, 20);
-
-			this->sendPacket("IPv4", packet);
+			if (normal_socket != NULL) {
+			//	this->socket_list.erase(normal_it);
+				this->closed_socket_list.push_back(normal_socket);
+			}
 		}
 	}
-	else
-		this->socket_list.erase(normal_it);
 }
 
 /* CONNECT */
@@ -328,6 +336,8 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 			new_socket->state = ST_ESTABLISHED;
 			new_socket->dest_ip = this->connection_ACK[sock->listenUUID].front()->client_ip;
 			new_socket->dest_port = this->connection_ACK[sock->listenUUID].front()->client_port;
+			new_socket->src_ip = this->connection_ACK[sock->listenUUID].front()->server_ip;
+			new_socket->src_port = this->connection_ACK[sock->listenUUID].front()->server_port;
 			ptr->sin_family = AF_INET;
 			ptr->sin_addr.s_addr = new_socket->dest_ip;
 			ptr->sin_port = new_socket->dest_port;
@@ -701,6 +711,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
 			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+				if ((*it)->src_ip == 0)
+					(*it)->src_ip = *(uint32_t*)dest_ip;
 			 	connect_socket = *it;
 				break;
 			}
@@ -760,30 +772,32 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}
 		else if (normal_socket->state == ST_LAST_ACK) {
-			
+			// deletion from socket_list may be needed
+			normal_socket->state = ST_CLOSED;
 		}
 		else if (normal_socket->state == ST_FIN_WAIT_1) {
-
+			normal_socket->state = ST_FIN_WAIT_2;
 		}
 		else if (normal_socket->state == ST_CLOSING) {
-
+			normal_socket->state = ST_TIME_WAIT;
+			// TODO: timer
 		}
 	}
 	else if (~bits & SYN && ~bits & ACK && bits & FIN) {
 		// FIN
 		sock = NULL;
 		
-		// search socket_list
-		for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
 			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
+				if ((*it)->src_ip == 0)
+					(*it)->src_ip = *(uint32_t*)dest_ip;
 				sock = *it;
 				break;
 			}
 		}
 		
 		if (sock == NULL) {
-			// search connect_socket_list
-			for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
 				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
 					sock = *it;
 					break;
@@ -792,16 +806,22 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 	
 		if (sock != NULL) {
-			if (sock->state == ST_ESTABLISHED) {
-				// start passive close
+			if (sock->state == ST_ESTABLISHED || sock->state == ST_FIN_WAIT_1 || sock->state == ST_FIN_WAIT_2) {
+				printf("								>>> socket 0x%x:%d\n", sock->src_ip, sock->src_port);
 				new_packet = this->clonePacket(packet);
-				sock->state = ST_CLOSE_WAIT;
+
+				if (sock->state == ST_ESTABLISHED)
+					sock->state = ST_CLOSE_WAIT;
+				else if (sock->state == ST_FIN_WAIT_1)
+					sock->state = ST_CLOSING;
+				else
+					sock->state = ST_TIME_WAIT;
 
 				bits = ACK;
 				sock->seqnum += 1;
 				seqnum = htonl(sock->seqnum);
 				acknum = htonl(ntohl(acknum)+1);
-
+				
 				new_packet->writeData(14+12, dest_ip, 4);
 				new_packet->writeData(14+16, src_ip, 4);
 				new_packet->writeData(14+20+0, dest_port, 2);
@@ -816,13 +836,11 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 				new_packet->writeData(14+20, TCPHeader, 20);
 
-				this->sendPacket("IPv4", new_packet);		
-			}
-			else if (sock->state == ST_FIN_WAIT_1) {
-				
-			}
-			else if (sock->state == ST_FIN_WAIT_2) {
+				this->sendPacket("IPv4", new_packet);
 
+				if (sock->state == ST_TIME_WAIT) {
+					// TODO: timer
+				}
 			}
 		}
 	}

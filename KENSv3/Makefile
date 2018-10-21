@@ -38,7 +38,7 @@ test_part1: all
 	@echo "Running test cases for project1..."
 	@-build/testTCP --gtest_filter="TestEnv_Reliable.TestOpen:TestEnv_Reliable.TestBind_*" --gtest_output=xml:part1.xml
 
-test_part2: test_part1
+test_part2: all
 	@echo "Running test cases for project2..."
 	@-build/testTCP --gtest_filter="TestEnv_Reliable.TestAccept_*:TestEnv_Any.TestAccept_*:TestEnv_Any.TestConnect_*:TestEnv_Any.TestClose_*" --gtest_output=xml:part2.xml
 
