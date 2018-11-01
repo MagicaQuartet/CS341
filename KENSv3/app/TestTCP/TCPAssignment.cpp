@@ -94,7 +94,7 @@ int TCPAssignment::syscall_socket(int pid) {
 	struct socket_info* sock;
 
 	fd = this->createFileDescriptor(pid);
-	sock = (struct socket_info*)calloc(sizeof(struct socket_info), 1);
+	sock = new socket_info;
 
 	sock->fd = fd;
 	sock->pid = pid;
@@ -313,7 +313,7 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 	else {
 		// create new socket to establish new connection
 		fd = this->createFileDescriptor(pid);
-		new_socket = (struct socket_info*)calloc(sizeof(socket_info), 1);
+		new_socket = new socket_info;
 		new_socket->fd = fd;
 		new_socket->pid = pid;
 		new_socket->listenUUID = 0;
@@ -595,7 +595,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					if (connect_socket == NULL && acked_conninfo == NULL) {
 						// new connection_info that represents this SYN request
 						struct connection_info* conninfo;
-						conninfo = (struct connection_info*)calloc(sizeof(struct connection_info*), 1);
+						conninfo = new connection_info;
 	
 						conninfo->client_ip = *(uint32_t*)src_ip;
 						conninfo->client_port = *(uint16_t*)src_port;
@@ -628,7 +628,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			else if (sock->state == ST_SYN_SENT) {	// simultaneous open
 				struct connection_info* conninfo;
-				conninfo = (struct connection_info*)calloc(sizeof(struct connection_info*), 1);
+				conninfo = new connection_info;
 
 				conninfo->client_ip = *(uint32_t*)src_ip;
 				conninfo->client_port = *(uint16_t*)src_port;

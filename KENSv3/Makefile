@@ -42,7 +42,7 @@ test_part2: all
 	@echo "Running test cases for project2..."
 	@-build/testTCP --gtest_filter="TestEnv_Reliable.TestAccept_*:TestEnv_Any.TestAccept_*:TestEnv_Any.TestConnect_*:TestEnv_Any.TestClose_*" --gtest_output=xml:part2.xml
 
-test_part3: test_part2
+test_part3: all
 	@echo "Running test cases for project3..."
 	@-build/testTCP --gtest_filter="TestEnv_Any.TestTransfer_*" --gtest_output=xml:part3.xml
 
