@@ -15,7 +15,6 @@
 #include <utility>
 #include "TCPAssignment.hpp"
 
-#define PACKETSIZE 54
 #define WINDOWSIZE 51200
 
 #define FIN 0x01
@@ -55,13 +54,22 @@ void TCPAssignment::finalize()
 
 /* helper functions */
 
-uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t *src_ip, uint8_t *dest_ip) {
+uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *src_ip, uint8_t *dest_ip) {
 	uint32_t sum = 0;
 
 	for (int i = 0; i < 10; i++) {
 		sum = sum + (TCPHeader[2*i] << 8) + TCPHeader[2*i+1];
 		while (sum >> 16)
 			sum = (sum >> 16) + (sum & 0xffff);
+	}
+
+	if (buf != NULL) {
+		int cnt = bufsize%2 ? (bufsize+1)/2 : bufsize/2;
+		for (int i = 0; i < cnt; i++) {
+			sum = sum + (buf[2*i] << 8) + buf[2*i+1];
+			while (sum >> 16)
+				sum = (sum >> 16) + (sum & 0xffff);
+		}
 	}
 	
 	for (int i = 0; i < 2; i++) {
@@ -82,7 +90,7 @@ uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t *src_ip, uint8_t *dest_ip) {
 
 	sum += 6;		// protocol
 	while (sum >> 16)
-		sum = (sum >> 16) + (sum & 0xffff);		
+		sum = (sum >> 16) + (sum & 0xffff);
 
 	return (uint16_t)~sum;
 }
@@ -101,7 +109,7 @@ int TCPAssignment::syscall_socket(int pid) {
 	sock->listenUUID = 0;
 	sock->parent = sock;
 
-	sock->seqnum = std::map<std::pair<uint32_t, uint16_t>, int>();
+	//sock->seqnum = std::map<std::pair<uint32_t, uint16_t>, int>();
 	sock->bind = false;
 	sock->state = ST_CLOSED;
 
@@ -113,6 +121,10 @@ int TCPAssignment::syscall_socket(int pid) {
 	sock->dest_port = 0;
 
 	this->socket_list.push_back(sock);
+
+	//sock->write_buf = std::list<struct buf_elem*> write_buf;
+	sock->write_buf_size = 0;
+	sock->write_blocked = NULL;
 
 	return fd;
 }
@@ -172,21 +184,22 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 					sock->state = ST_LAST_ACK;
 				else
 					sock->state = ST_FIN_WAIT_1;
-
-				packet = this->allocatePacket(PACKETSIZE);
+				
+				packet = this->allocatePacket(54);
 				memset(TCPHeader, 0, 20);
 				*(uint32_t*)src_ip = sock->src_ip;
 				*(uint32_t*)dest_ip = sock->dest_ip;
 				*(uint16_t*)TCPHeader = sock->src_port;					// source port
 				*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
 				*(uint32_t*)(TCPHeader+4) = htonl(sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)]);	// sequence number
+				*(uint32_t*)(TCPHeader+8) = htonl(sock->parent->acknum[std::make_pair(sock->dest_ip, sock->dest_port)]);
 				*(TCPHeader+12) = 0x50;													// header size in 4bytes
 				*(TCPHeader+13) = FIN;													// flag (FIN)
 				*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);	// window size
 				packet->writeData(14+12, src_ip, 4);
 				packet->writeData(14+16, dest_ip, 4);
 			
-				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, src_ip, dest_ip));
 				packet->writeData(14+20, TCPHeader, 20);
 
 				this->sendPacket("IPv4", packet);
@@ -199,6 +212,86 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 			}
 		}
 	}
+}
+
+/* READ */
+
+void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, int size) {
+
+}
+
+/* WRITE */
+
+void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, int size) {
+	struct socket_info* sock = NULL;
+
+	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
+		if ((*it)->fd == fd && (*it)->pid == pid) {
+			sock = *it;
+			break;
+		}
+	}
+
+	if (sock == NULL) {
+		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
+			if ((*it)->fd == fd && (*it)->pid == pid) {
+				sock = *it;
+				break;
+			}
+		}
+	}
+
+	if (sock != NULL && sock->state == ST_ESTABLISHED) {
+		int writable = 512 - sock->write_buf_size;
+		struct buf_elem* elem = new buf_elem;
+		elem->syscallUUID = syscallUUID;
+
+		if (writable > 0) {
+			int write_bytes = writable >= size ? size : writable;
+
+			Packet *packet;
+			uint8_t TCPHeader[20], src_ip[4], dest_ip[4], length[2];
+		
+			elem->seqnum = sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)];
+			elem->size = write_bytes;
+			elem->data = (char *)calloc(sizeof(char), write_bytes+1);
+			memcpy(elem->data, buf, write_bytes);
+
+			packet = this->allocatePacket(54+write_bytes);
+			memset(TCPHeader, 0, 20);
+			*(uint16_t*)length = htons(write_bytes+40);
+			*(uint32_t*)src_ip = sock->src_ip;
+			*(uint32_t*)dest_ip = sock->dest_ip;
+			*(uint16_t*)TCPHeader = sock->src_port;					// source port
+			*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
+			*(uint32_t*)(TCPHeader+4) = htonl(sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)]);	// sequence number
+			*(uint32_t*)(TCPHeader+8) = htonl(sock->parent->acknum[std::make_pair(sock->dest_ip, sock->dest_port)]);
+			*(TCPHeader+12) = 0x50;													// header size in 4bytes
+			*(TCPHeader+13) = ACK;
+			*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);	// window size
+			packet->writeData(14+2, length, 2);
+			packet->writeData(14+12, src_ip, 4);
+			packet->writeData(14+16, dest_ip, 4);
+	
+			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, (uint8_t*)elem->data, write_bytes, src_ip, dest_ip));
+			packet->writeData(14+20, TCPHeader, 20);
+			packet->writeData(14+20+20, elem->data, write_bytes);
+		
+			this->sendPacket("IPv4", packet);
+			sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)] += write_bytes;
+			sock->write_buf.push_back(elem);
+			sock->write_buf_size += write_bytes;
+
+			this->returnSystemCall(syscallUUID, write_bytes);
+		}
+		else {
+			elem->size = size;
+			elem->data = (char *)calloc(sizeof(char), size);
+			sock->write_blocked = elem;
+		}
+	}
+	else
+		this->returnSystemCall(syscallUUID, -1);
 }
 
 /* CONNECT */
@@ -236,22 +329,24 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		sock->dest_ip = ptr->sin_addr.s_addr;
 		sock->dest_port = ptr->sin_port;
 		sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)] = 0;
+		sock->parent->acknum[std::make_pair(sock->dest_ip, sock->dest_port)] = 0;
 		
 		// create SYN packet
-		packet = this->allocatePacket(PACKETSIZE);
+		packet = this->allocatePacket(54);
 		memset(TCPHeader, 0, 20);
 		*(uint32_t*)src_ip = sock->src_ip;
 		*(uint32_t*)dest_ip = sock->dest_ip;
 		*(uint16_t*)TCPHeader = sock->src_port;					// source port
 		*(uint16_t*)(TCPHeader+2) = sock->dest_port;		// destination port
 		*(uint32_t*)(TCPHeader+4) = htonl(sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)]);	// sequence number
+		*(uint32_t*)(TCPHeader+8) = htonl(sock->parent->acknum[std::make_pair(sock->dest_ip, sock->dest_port)]);
 		*(TCPHeader+12) = 0x50;													// header size in 4bytes
 		*(TCPHeader+13) = SYN;													// flag (SYN)
 		*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);	// window size
 		packet->writeData(14+12, src_ip, 4);
 		packet->writeData(14+16, dest_ip, 4);
 	
-		*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, src_ip, dest_ip));
+		*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, src_ip, dest_ip));
 		packet->writeData(14+20, TCPHeader, 20);
 
 		this->block_connect.push_back(std::make_pair(sock, syscallUUID));		
@@ -327,6 +422,9 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 		new_socket->src_port = sock->src_port;
 		new_socket->dest_ip = 0;
 		new_socket->dest_port = 0;
+
+		new_socket->write_buf_size = 0;
+		new_socket->write_blocked = NULL;
 		this->connect_socket_list.push_back(new_socket);
 
 		// if there is no ACK requests in queue, block
@@ -495,7 +593,7 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		//this->syscall_read(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
 		break;
 	case WRITE:
-		//this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
+		this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
 		break;
 	case CONNECT:
 		//this->syscall_connect(syscallUUID, pid, param.param1_int,
@@ -554,6 +652,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+4, (uint8_t*)&acknum, 4);	// acknowledge number
 	packet->readData(14+20+13, &bits, 1);							// flag
 
+	//printf("								>>> bits 0x%x\n", bits);
+
 	if (bits & SYN && ~bits & ACK && ~bits & FIN) {
 		// SYN
 		
@@ -607,7 +707,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						// send SYNACK packet to client
 						sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = 0;							// initialize sequence number for new connection
 						seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+						sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
 						acknum = htonl(ntohl(acknum)+1);
+
 
 						new_packet->writeData(14+12, dest_ip, 4);
 						new_packet->writeData(14+16, src_ip, 4);
@@ -619,7 +721,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			
 						new_packet->readData(14+20, TCPHeader, 20);
 						*(uint16_t*)(TCPHeader+16) = 0;
-						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, dest_ip, src_ip));
 	
 						new_packet->writeData(14+20, TCPHeader, 20);
 						this->sendPacket("IPv4", new_packet);
@@ -638,6 +740,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				// send SYNACK packet to client
 				sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = 0;								// initialize sequence number for new connection
 				seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+				sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
 				acknum = htonl(ntohl(acknum)+1);
 
 				new_packet->writeData(14+12, dest_ip, 4);
@@ -650,7 +753,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			
 				new_packet->readData(14+20, TCPHeader, 20);
 				*(uint16_t*)(TCPHeader+16) = 0;
-				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, dest_ip, src_ip));
 	
 				new_packet->writeData(14+20, TCPHeader, 20);
 				this->sendPacket("IPv4", new_packet);
@@ -683,8 +786,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			// send ACK packet
 			sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] += 1;
 			seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+			sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
 			acknum = htonl(ntohl(acknum)+1);
-
+			
 			new_packet->writeData(14+12, dest_ip, 4);
 			new_packet->writeData(14+16, src_ip, 4);
 			new_packet->writeData(14+20+0, dest_port, 2);
@@ -695,7 +799,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 			new_packet->readData(14+20, TCPHeader, 20);
 			*(uint16_t*)(TCPHeader+16) = 0;
-			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+			*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, dest_ip, src_ip));
 
 			new_packet->writeData(14+20, TCPHeader, 20);
 
@@ -779,6 +883,61 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 			}
 		}
+		else if (normal_socket->state == ST_ESTABLISHED) {
+			std::list<struct buf_elem*>::iterator it;
+
+			for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {
+				if ((*it)->seqnum + (*it)->seqnum < ntohl(acknum))
+					normal_socket->write_buf_size -= (*it)->size;
+				else
+					break;
+			}
+
+			if (it != normal_socket->write_buf.end())
+				++it;
+			normal_socket->write_buf.erase(normal_socket->write_buf.begin(), it);
+
+			if (normal_socket->write_blocked != NULL) {
+				struct buf_elem* elem = new buf_elem;
+				uint8_t length[2];
+				int writable = 512 - normal_socket->write_buf_size;
+				int write_bytes = writable >= normal_socket->write_blocked->size ? normal_socket->write_blocked->size : writable;
+
+				elem->seqnum = normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
+				elem->size = write_bytes;
+				elem->data = (char *)calloc(sizeof(char), write_bytes+1);
+				memcpy(elem->data, normal_socket->write_blocked->data, write_bytes);
+
+				new_packet = this->allocatePacket(54+write_bytes);
+				memset(TCPHeader, 0, 20);
+				*(uint32_t*)src_ip = normal_socket->src_ip;
+				*(uint32_t*)dest_ip = normal_socket->dest_ip;
+				*(uint32_t*)length = htons(write_bytes);
+				*(uint16_t*)TCPHeader = normal_socket->src_port;					// source port
+				*(uint16_t*)(TCPHeader+2) = normal_socket->dest_port;		// destination port
+				*(uint32_t*)(TCPHeader+4) = htonl(normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);	// sequence number
+				*(uint32_t*)(TCPHeader+8) = htonl(normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);
+				*(TCPHeader+12) = 0x50;													// header size in 4bytes
+				*(TCPHeader+13) = ACK;
+				*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);	// window size
+				new_packet->writeData(14+2, length, 2);
+				new_packet->writeData(14+12, src_ip, 4);
+				new_packet->writeData(14+16, dest_ip, 4);
+	
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, (uint8_t*)elem->data, write_bytes, src_ip, dest_ip));
+				new_packet->writeData(14+20, TCPHeader, 20);
+				new_packet->writeData(14+20+20, elem->data, write_bytes);
+		
+				this->sendPacket("IPv4", new_packet);
+				normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] += write_bytes;
+				normal_socket->write_buf.push_back(elem);
+				normal_socket->write_buf_size += write_bytes;
+
+				this->returnSystemCall(normal_socket->write_blocked->syscallUUID, write_bytes);
+				delete normal_socket->write_blocked;
+				normal_socket->write_blocked = elem;
+			}
+		}
 		else if (normal_socket->state == ST_LAST_ACK) {			// ACK of FIN (but it is not important because the socket is closed)
 			normal_socket->state = ST_CLOSED;
 		}
@@ -823,6 +982,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				if (connect_socket == NULL) {						// client closes a connection before it is actually constructed by accept()
 					bits = ACK;
 					seqnum = htonl(normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+					normal_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
 					acknum = htonl(ntohl(acknum)+1);
 				
 					new_packet->writeData(14+12, dest_ip, 4);
@@ -835,7 +995,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 					new_packet->readData(14+20, TCPHeader, 20);
 					*(uint16_t*)(TCPHeader+16) = 0;
-					*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+					*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, dest_ip, src_ip));
 
 					new_packet->writeData(14+20, TCPHeader, 20);
 
@@ -852,6 +1012,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 						bits = ACK;
 						seqnum = htonl(connect_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+						connect_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
 						acknum = htonl(ntohl(acknum)+1);
 				
 						new_packet->writeData(14+12, dest_ip, 4);
@@ -864,7 +1025,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 						new_packet->readData(14+20, TCPHeader, 20);
 						*(uint16_t*)(TCPHeader+16) = 0;
-						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, dest_ip, src_ip));
 
 						new_packet->writeData(14+20, TCPHeader, 20);
 
@@ -882,6 +1043,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 				bits = ACK;
 				seqnum = htonl(normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+				normal_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
 				acknum = htonl(ntohl(acknum)+1);
 				
 				new_packet->writeData(14+12, dest_ip, 4);
@@ -894,7 +1056,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 				new_packet->readData(14+20, TCPHeader, 20);
 				*(uint16_t*)(TCPHeader+16) = 0;
-				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, dest_ip, src_ip));
+				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, dest_ip, src_ip));
 
 				new_packet->writeData(14+20, TCPHeader, 20);
 

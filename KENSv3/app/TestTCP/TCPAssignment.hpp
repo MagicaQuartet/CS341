@@ -22,6 +22,13 @@
 namespace E
 {
 
+struct buf_elem {
+	UUID syscallUUID;
+	int seqnum;
+	int size;
+	char *data;
+};
+
 struct socket_info {
 	int fd;													// file descripter
 	int pid;												// id of process which created this socket
@@ -33,12 +40,18 @@ struct socket_info {
 
 	std::map<std::pair<uint32_t, uint16_t>, int> seqnum;				// sequence number for each connection
 																															// | (<destination ip>, <destination port>) can distinguish every connection
+	std::map<std::pair<uint32_t, uint16_t>, int> acknum;
+
 	uint32_t backlog;
 	
 	uint32_t src_ip;			// name of this socket
 	uint16_t src_port;
 	uint32_t dest_ip;			// name of peer
 	uint16_t dest_port;
+
+	std::list<struct buf_elem*> write_buf;
+	int write_buf_size;
+	struct buf_elem* write_blocked;
 };
 
 struct connection_info {
@@ -73,8 +86,8 @@ protected:
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;
 	int syscall_socket(int pid);
 	void syscall_close(int pid, int fd);
-	// int syscall_read();
-	// int syscall_write();
+	void syscall_read(UUID syscallUUID, int pid, int fd, void *buf, int size);
+	void syscall_write(UUID syscallUUID, int pid, int fd, void *buf, int size);
 	void syscall_connect(UUID syscallUUID, int pid, int fd, struct sockaddr* addr, socklen_t len);
 	int syscall_listen(UUID syscallUUID, int pid, int fd, int backlog);
 	void syscall_accept(UUID syscallUUID, int pid, int fd, struct sockaddr *addr, socklen_t *lenptr);
