@@ -84,7 +84,7 @@ uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *sr
 			sum = (sum >> 16) + (sum & 0xffff);
 	}
 
-	sum += 20;	// header size
+	sum += 20 + bufsize;	// header+data size
 	while (sum >> 16)
 		sum = (sum >> 16) + (sum & 0xffff);
 
@@ -287,6 +287,7 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 		else {
 			elem->size = size;
 			elem->data = (char *)calloc(sizeof(char), size);
+			memcpy(elem->data, buf, size);
 			sock->write_blocked = elem;
 		}
 	}
@@ -885,6 +886,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if (normal_socket->state == ST_ESTABLISHED) {
 			std::list<struct buf_elem*>::iterator it;
+			normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] -= 1;
 
 			for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {
 				if ((*it)->seqnum + (*it)->seqnum < ntohl(acknum))
