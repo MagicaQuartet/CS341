@@ -52,6 +52,10 @@ struct socket_info {
 	std::list<struct buf_elem*> write_buf;
 	int write_buf_size;
 	struct buf_elem* write_blocked;
+
+	std::list<struct buf_elem*> read_buf;
+	int read_buf_size;
+	struct buf_elem* read_blocked;
 };
 
 struct connection_info {
