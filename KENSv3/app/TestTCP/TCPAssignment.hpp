@@ -22,11 +22,11 @@
 namespace E
 {
 
-struct buf_elem {
-	UUID syscallUUID;
-	int seqnum;
-	int size;
-	char *data;
+struct buf_elem {									// element of write_buf and read_buf
+	UUID syscallUUID;								// syscallUUID of write/read call
+	int seqnum;											// sequence number when write/read is called
+	int size;												// size parameter
+	char *data;											// buffer pointer parameter
 };
 
 struct socket_info {
@@ -49,13 +49,13 @@ struct socket_info {
 	uint32_t dest_ip;			// name of peer
 	uint16_t dest_port;
 
-	std::list<struct buf_elem*> write_buf;
-	int write_buf_size;
-	struct buf_elem* write_blocked;
+	std::list<struct buf_elem*> write_buf;		// write buffer
+	int write_buf_size;												// write buffer size
+	struct buf_elem* write_blocked;						// blocked write call
 
-	std::list<struct buf_elem*> read_buf;
-	int read_buf_size;
-	struct buf_elem* read_blocked;
+	std::list<struct buf_elem*> read_buf;			// read buffer
+	int read_buf_size;												// read buffer size
+	struct buf_elem* read_blocked;						// blocked read
 };
 
 struct connection_info {
