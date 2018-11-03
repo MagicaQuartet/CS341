@@ -1002,7 +1002,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					*(uint32_t*)(TCPHeader+8) = htonl(connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)]);
 					*(TCPHeader+12) = 0x50;																																																									// header size in 4bytes
 					*(TCPHeader+13) = ACK;
-					*(uint16_t*)(TCPHeader+14) = htons(BUFFERSIZE);																																													// window size
+					*(uint16_t*)(TCPHeader+14) = htons(BUFFERSIZE - connect_socket->read_buf_size);																													// window size
 					new_packet->writeData(14+2, length, 2);
 					new_packet->writeData(14+12, src_ip, 4);
 					new_packet->writeData(14+16, dest_ip, 4);
@@ -1171,7 +1171,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				*(uint32_t*)(TCPHeader+8) = htonl(normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);
 				*(TCPHeader+12) = 0x50;													// header size in 4bytes
 				*(TCPHeader+13) = ACK;
-				*(uint16_t*)(TCPHeader+14) = htons(BUFFERSIZE);	// window size
+				*(uint16_t*)(TCPHeader+14) = htons(BUFFERSIZE - normal_socket->read_buf_size);	// window size
 				new_packet->writeData(14+2, length, 2);
 				new_packet->writeData(14+12, src_ip, 4);
 				new_packet->writeData(14+16, dest_ip, 4);
