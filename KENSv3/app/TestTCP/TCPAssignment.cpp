@@ -187,16 +187,8 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 				if (sock->state == ST_CLOSE_WAIT)
 					sock->state = ST_LAST_ACK;
 				else
-					sock->state = ST_FIN_WAIT_1;
+					sock->state = ST_FIN_WAIT_1;	
 
-				//sock->write_buf.clear();
-				//sock->write_buf_size = 0;
-				//sock->write_blocked = NULL;
-
-				//sock->read_buf.clear();
-				//sock->read_buf_size = 0;
-				//sock->read_blocked = NULL;
-				
 				packet = this->allocatePacket(54);
 				memset(TCPHeader, 0, 20);
 				*(uint32_t*)src_ip = sock->src_ip;
@@ -277,11 +269,9 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 		}
 
 		if (total_read_bytes > 0) {
-			//printf("							>>> Data input && READ\n");	
 			this->returnSystemCall(syscallUUID, total_read_bytes);
 		}
 		else {
-			//printf("							>>> No data input && READ\n");
 			struct buf_elem* elem = new buf_elem;
 			elem->syscallUUID = syscallUUID;
 			elem->size = size;
@@ -297,7 +287,6 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 
 void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, int size) {
 	struct socket_info* sock = NULL;
-
 	for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
 		if ((*it)->fd == fd && (*it)->pid == pid) {
 			sock = *it;
@@ -323,7 +312,6 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 			elem->syscallUUID = syscallUUID;
 
 			if (writable > 0) {
-				//printf("									>>> write buffer available\n");
 				int write_bytes = writable >= size ? size : writable;
 				write_bytes = 512 > write_bytes ? write_bytes : 512;
 
@@ -363,7 +351,6 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 				written_bytes += write_bytes;
 			}
 			else {
-				//printf("								>>>  write buffer full\n");
 				elem->size = size - written_bytes;
 				elem->data = (char *)calloc(sizeof(char), elem->size);
 				memcpy(elem->data, buf+written_bytes, elem->size);
@@ -742,8 +729,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+4, (uint8_t*)&acknum, 4);	// acknowledge number
 	packet->readData(14+20+13, &bits, 1);							// flag
 
-	//printf("								>>> bits 0x%x\n", bits);
-
 	if (bits & SYN && ~bits & ACK && ~bits & FIN) {
 		// SYN
 		
@@ -920,18 +905,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}
 			
-		normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] += 1;				// if not ACK of FIN, increase sequence number
-
 		if (normal_socket->state == ST_LISTEN && connect_socket != NULL) {			// ACK of FIN (valid connection already exists)
-			normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] -= 1;			// if ACK of FIN, do not increase sequence number
 			
 			if (connect_socket->state == ST_ESTABLISHED) {
 				if (ntohs(*(uint16_t*)length) == 40) {
-//					printf("								>>> ACCEPT_SEND - get response\n");
 					std::list<struct buf_elem*>::iterator it;
 
 					for (it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {
-	//					printf("				>>> seqnum %d, size %d, acknum %d\n", (*it)->seqnum, (*it)->size, ntohl(acknum));
 						if ((*it)->seqnum + (*it)->size < ntohl(acknum)) 
 							connect_socket->write_buf_size -= (*it)->size;
 						else
@@ -986,11 +966,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					int datasize = ntohs(*(uint16_t*)length) - 40;
 
 					if (connect_socket->read_blocked != NULL) {
-						//printf("							>>> Data input && Blocked READ\n");
 						int read_bytes = datasize > connect_socket->read_blocked->size ? connect_socket->read_blocked->size : datasize;
 						packet->readData(14+20+20, connect_socket->read_blocked->data, read_bytes);
 	
-						//printf("								>>> datasize: %d, read_bytes: %d\n", datasize, read_bytes);
 
 						if (read_bytes < datasize) {
 							struct buf_elem *elem = new buf_elem;
@@ -999,14 +977,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							packet->readData(14+20+20+read_bytes, elem->data, elem->size);
 							connect_socket->read_buf.push_back(elem);
 							connect_socket->read_buf_size += elem->size;
-							//printf("									>>> Remainder: 0x%x bytes\n", elem->size);
 						}
 
 						this->returnSystemCall(connect_socket->read_blocked->syscallUUID, read_bytes);
 						connect_socket->read_blocked = NULL;
 					}
 					else {
-						//printf("							>>> Data input && no Blocked READ\n");
 						struct buf_elem *elem = new buf_elem;
 						elem->size = datasize;
 						elem->data = (char *)calloc(elem->size, sizeof(char));
@@ -1043,6 +1019,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if (normal_socket->state == ST_LISTEN && connect_socket == NULL) {			// ACK of SYNACK
 			// find previous SYN request and remove it
+			normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] += 1;				// if not ACK of FIN, increase sequence number
 			for (std::list<struct connection_info*>::iterator it=this->connection_SYN[normal_socket->listenUUID].begin(); it!=this->connection_SYN[normal_socket->listenUUID].end(); ++it) {
 				if ((*it)->client_port == *(uint16_t*)src_port && ((*it)->client_ip == *(uint32_t*)src_ip)) {
 					conninfo = *it;
@@ -1090,7 +1067,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}
 		else if (normal_socket->state == ST_ESTABLISHED) {
-			normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] -= 1;
 			if (ntohs(*(uint16_t*)length) == 40) {
 				std::list<struct buf_elem*>::iterator it;
 
@@ -1160,11 +1136,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				int datasize = ntohs(*(uint16_t*)length) - 40;
 
 				if (normal_socket->read_blocked != NULL) {
-					//printf("							>>> Data input && Blocked READ\n");
 					int read_bytes = datasize > normal_socket->read_blocked->size ? normal_socket->read_blocked->size : datasize;
 					packet->readData(14+20+20, normal_socket->read_blocked->data, read_bytes);
-
-					//printf("								>>> datasize: %d, read_bytes: %d\n", datasize, read_bytes);
 
 					if (read_bytes < datasize) {
 						struct buf_elem *elem = new buf_elem;
@@ -1173,14 +1146,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						packet->readData(14+20+20+read_bytes, elem->data, elem->size);
 						normal_socket->read_buf.push_back(elem);
 						normal_socket->read_buf_size += elem->size;
-						//printf("									>>> Remainder: 0x%x bytes\n", elem->size);
 					}
 
 					this->returnSystemCall(normal_socket->read_blocked->syscallUUID, read_bytes);
 					normal_socket->read_blocked = NULL;
 				}
 				else {
-					//printf("							>>> Data input && no Blocked READ\n");
 					struct buf_elem *elem = new buf_elem;
 					elem->size = datasize;
 					elem->data = (char *)calloc(elem->size, sizeof(char));
@@ -1219,11 +1190,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if (normal_socket->state == ST_FIN_WAIT_1) {		// ACK of FIN
 			normal_socket->state = ST_FIN_WAIT_2;
-			normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] -= 1;
 		}
 		else if (normal_socket->state == ST_CLOSING) {			// ACK of FIN
 			normal_socket->state = ST_TIME_WAIT;
-			normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] -= 1;
 		}
 	}
 	else if (~bits & SYN && ~bits & ACK && bits & FIN) {
@@ -1306,6 +1275,20 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						new_packet->writeData(14+20, TCPHeader, 20);
 
 						this->sendPacket("IPv4", new_packet);
+						if (connect_socket->write_blocked != NULL || connect_socket->read_blocked != NULL) {
+							struct buf_elem* elem;
+
+							if (connect_socket->write_blocked != NULL) {
+								elem = connect_socket->write_blocked;
+								connect_socket->write_blocked = NULL;
+							}
+							else {
+								elem = connect_socket->read_blocked;
+								connect_socket->read_blocked = NULL;
+							}
+
+							this->returnSystemCall(elem->syscallUUID, 0);
+						}
 					}
 				}
 			}
@@ -1337,6 +1320,20 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				new_packet->writeData(14+20, TCPHeader, 20);
 
 				this->sendPacket("IPv4", new_packet);
+				if (normal_socket->write_blocked != NULL || normal_socket->read_blocked != NULL) {
+					struct buf_elem* elem;
+
+					if (normal_socket->write_blocked != NULL) {
+						elem = normal_socket->write_blocked;
+						normal_socket->write_blocked = NULL;
+					}
+					else {
+						elem = normal_socket->read_blocked;
+						normal_socket->read_blocked = NULL;
+					}
+
+					this->returnSystemCall(elem->syscallUUID, 0);
+				}
 			}
 		}
 	}
