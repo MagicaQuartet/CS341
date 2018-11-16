@@ -48,6 +48,7 @@ struct socket_info {
 	std::map<std::pair<uint32_t, uint16_t>, int> seqnum;				// sequence number for each connection
 																															// | (<destination ip>, <destination port>) can distinguish every connection
 	std::map<std::pair<uint32_t, uint16_t>, int> acknum;
+	std::map<std::pair<uint32_t, uint16_t>, int> readnum;
 
 	uint32_t backlog;
 	
