@@ -713,7 +713,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 {
 	uint8_t length[2], src_ip[4], dest_ip[4], src_port[2], dest_port[2], TCPHeader[20];
 	uint8_t bits;
-	uint32_t seqnum, acknum;
+	uint32_t seqnum, acknum, new_seqnum, new_acknum;
 	Packet *new_packet;
 	struct socket_info* sock;
 
@@ -722,7 +722,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+16, dest_ip, 4);							// destination ip
 	packet->readData(14+20+0, src_port, 2);						// source port
 	packet->readData(14+20+2, dest_port, 2);					// destination port
-	packet->readData(14+20+4, (uint8_t*)&acknum, 4);	// acknowledge number
+	packet->readData(14+20+4, (uint8_t*)&seqnum, 4);	// sequence number
+	packet->readData(14+20+8, (uint8_t*)&acknum, 4);	// acknowledge number
 	packet->readData(14+20+13, &bits, 1);							// flag
 
 	if (bits & SYN && ~bits & ACK && ~bits & FIN) {
@@ -777,17 +778,17 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 						// send SYNACK packet to client
 						sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = 0;							// initialize sequence number for new connection
-						seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
-						sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
-						acknum = htonl(ntohl(acknum)+1);
+						new_seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+						sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
+						new_acknum = htonl(ntohl(seqnum)+1);
 
 
 						new_packet->writeData(14+12, dest_ip, 4);
 						new_packet->writeData(14+16, src_ip, 4);
 						new_packet->writeData(14+20+0, dest_port, 2);
 						new_packet->writeData(14+20+2, src_port, 2);
-						new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-						new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+						new_packet->writeData(14+20+4, (uint8_t*)&new_seqnum, 4);
+						new_packet->writeData(14+20+8, (uint8_t*)&new_acknum, 4);
 						new_packet->writeData(14+20+13, &bits, 1);
 			
 						new_packet->readData(14+20, TCPHeader, 20);
@@ -810,16 +811,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				
 				// send SYNACK packet to client
 				sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = 0;								// initialize sequence number for new connection
-				seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
-				sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
-				acknum = htonl(ntohl(acknum)+1);
+				new_seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+				sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
+				new_acknum = htonl(ntohl(seqnum)+1);
 
 				new_packet->writeData(14+12, dest_ip, 4);
 				new_packet->writeData(14+16, src_ip, 4);
 				new_packet->writeData(14+20+0, dest_port, 2);
 				new_packet->writeData(14+20+2, src_port, 2);
-				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+				new_packet->writeData(14+20+4, (uint8_t*)&new_seqnum, 4);
+				new_packet->writeData(14+20+8, (uint8_t*)&new_acknum, 4);
 				new_packet->writeData(14+20+13, &bits, 1);
 			
 				new_packet->readData(14+20, TCPHeader, 20);
@@ -856,16 +857,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 			// send ACK packet
 			sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] += 1;
-			seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
-			sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
-			acknum = htonl(ntohl(acknum)+1);
+			new_seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+			sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
+			new_acknum = htonl(ntohl(seqnum)+1);
 			
 			new_packet->writeData(14+12, dest_ip, 4);
 			new_packet->writeData(14+16, src_ip, 4);
 			new_packet->writeData(14+20+0, dest_port, 2);
 			new_packet->writeData(14+20+2, src_port, 2);
-			new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-			new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+			new_packet->writeData(14+20+4, (uint8_t*)&new_seqnum, 4);
+			new_packet->writeData(14+20+8, (uint8_t*)&new_acknum, 4);
 			new_packet->writeData(14+20+13, &bits, 1);
 
 			new_packet->readData(14+20, TCPHeader, 20);
@@ -909,7 +910,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					std::list<struct buf_elem*>::iterator it;
 
 					for (it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {			// remove data that the peer received from buffer
-						if ((*it)->seqnum + (*it)->size < ntohl(acknum)) 																					// ... and adjust current data size in buffer
+						if ((*it)->seqnum + (*it)->size < ntohl(seqnum)) 																					// ... and adjust current data size in buffer
 							connect_socket->write_buf_size -= (*it)->size;
 						else
 							break;
@@ -1068,7 +1069,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				std::list<struct buf_elem*>::iterator it;
 
 				for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {		// remove data that the peer received from buffer
-					if ((*it)->seqnum + (*it)->size < ntohl(acknum))																			// ... and adjust current data size in buffer
+					if ((*it)->seqnum + (*it)->size < ntohl(seqnum))																			// ... and adjust current data size in buffer
 						normal_socket->write_buf_size -= (*it)->size;
 					else
 						break;
@@ -1223,16 +1224,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			if (normal_socket->state == ST_LISTEN) {	// server side
 				if (connect_socket == NULL) {						// client closes a connection before it is actually constructed by accept()
 					bits = ACK;
-					seqnum = htonl(normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
-					normal_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
-					acknum = htonl(ntohl(acknum)+1);
+					new_seqnum = htonl(normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+					normal_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
+					new_acknum = htonl(ntohl(seqnum)+1);
 				
 					new_packet->writeData(14+12, dest_ip, 4);
 					new_packet->writeData(14+16, src_ip, 4);
 					new_packet->writeData(14+20+0, dest_port, 2);
 					new_packet->writeData(14+20+2, src_port, 2);
-					new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-					new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+					new_packet->writeData(14+20+4, (uint8_t*)&new_seqnum, 4);
+					new_packet->writeData(14+20+8, (uint8_t*)&new_acknum, 4);
 					new_packet->writeData(14+20+13, &bits, 1);
 
 					new_packet->readData(14+20, TCPHeader, 20);
@@ -1253,16 +1254,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							connect_socket->state = ST_TIME_WAIT;
 
 						bits = ACK;
-						seqnum = htonl(connect_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
-						connect_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
-						acknum = htonl(ntohl(acknum)+1);
+						new_seqnum = htonl(connect_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+						connect_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
+						new_acknum = htonl(ntohl(seqnum)+1);
 				
 						new_packet->writeData(14+12, dest_ip, 4);
 						new_packet->writeData(14+16, src_ip, 4);
 						new_packet->writeData(14+20+0, dest_port, 2);
 						new_packet->writeData(14+20+2, src_port, 2);
-						new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-						new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+						new_packet->writeData(14+20+4, (uint8_t*)&new_seqnum, 4);
+						new_packet->writeData(14+20+8, (uint8_t*)&new_acknum, 4);
 						new_packet->writeData(14+20+13, &bits, 1);
 
 						new_packet->readData(14+20, TCPHeader, 20);
@@ -1299,16 +1300,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					normal_socket->state = ST_TIME_WAIT;
 
 				bits = ACK;
-				seqnum = htonl(normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
-				normal_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(acknum)+1;
-				acknum = htonl(ntohl(acknum)+1);
+				new_seqnum = htonl(normal_socket->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
+				normal_socket->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
+				new_acknum = htonl(ntohl(seqnum)+1);
 				
 				new_packet->writeData(14+12, dest_ip, 4);
 				new_packet->writeData(14+16, src_ip, 4);
 				new_packet->writeData(14+20+0, dest_port, 2);
 				new_packet->writeData(14+20+2, src_port, 2);
-				new_packet->writeData(14+20+4, (uint8_t*)&seqnum, 4);
-				new_packet->writeData(14+20+8, (uint8_t*)&acknum, 4);
+				new_packet->writeData(14+20+4, (uint8_t*)&new_seqnum, 4);
+				new_packet->writeData(14+20+8, (uint8_t*)&new_acknum, 4);
 				new_packet->writeData(14+20+13, &bits, 1);
 
 				new_packet->readData(14+20, TCPHeader, 20);
