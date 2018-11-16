@@ -178,7 +178,6 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 			}
 	
 			Packet *packet;
-			struct timer_info* timer;
 			uint8_t TCPHeader[20], src_ip[4], dest_ip[4];
 
 			if (sock->state == ST_CLOSE_WAIT || sock->state == ST_ESTABLISHED) {
@@ -188,7 +187,6 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 					sock->state = ST_FIN_WAIT_1;	
 
 				packet = this->allocatePacket(54);
-				//timer = new timer_info;
 
 				memset(TCPHeader, 0, 20);
 				*(uint32_t*)src_ip = sock->src_ip;
@@ -205,11 +203,6 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 			
 				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, src_ip, dest_ip));
 				packet->writeData(14+20, TCPHeader, 20);
-
-				//timer->timerUUID = this->addTimer(timer, 100000000);
-				//timer->socket = sock;
-				//timer->packet = this->clonePacket(packet);
-				//sock->handshake_timer = timer;
 
 				this->sendPacket("IPv4", packet);
 				sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)] += 1;
@@ -676,7 +669,7 @@ int TCPAssignment::syscall_getpeername(int pid, int fd, struct sockaddr *addr, s
 void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param)
 {
 	int ret;
-	//printf("											>>> syscall %d\n", param.syscallNumber);
+//	printf("											>>> syscall %d\n", param.syscallNumber);
 
 	switch(param.syscallNumber)
 	{
@@ -883,7 +876,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	else if (bits & SYN && bits & ACK && ~bits & FIN) {
 		// SYNACK
 		UUID uuid = 0;
-		struct timer_info* timer;
 		new_packet = this->clonePacket(packet);
 		bits = ACK;
 
@@ -902,10 +894,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		if (sock != NULL) {
 			// complete connection
 			sock->state = ST_ESTABLISHED;
-			this->cancelTimer(sock->handshake_timer->timerUUID);
-			sock->handshake_timer = NULL;
-
-			timer = new timer_info;
+			if (sock->handshake_timer != NULL) {
+				this->cancelTimer(sock->handshake_timer->timerUUID);
+				sock->handshake_timer = NULL;
+			}
 
 			// send ACK packet
 			sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] += 1;
@@ -927,11 +919,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 			new_packet->writeData(14+20, TCPHeader, 20);
 			
-			timer->timerUUID = this->addTimer(timer, 100000000);
-			timer->socket = sock;
-			timer->packet = this->clonePacket(new_packet);
-			sock->handshake_timer = timer;
-
 			this->sendPacket("IPv4", new_packet);
 			this->returnSystemCall(uuid, 0);
 		}
@@ -1262,18 +1249,24 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}
 		else if (normal_socket->state == ST_LAST_ACK) {			// ACK of FIN (but it is not important because the socket is closed)
-			this->cancelTimer(normal_socket->handshake_timer->timerUUID);
-			normal_socket->handshake_timer = NULL;
+			if (normal_socket->handshake_timer != NULL) {
+				this->cancelTimer(normal_socket->handshake_timer->timerUUID);
+				normal_socket->handshake_timer = NULL;
+			}
 			normal_socket->state = ST_CLOSED;
 		}
 		else if (normal_socket->state == ST_FIN_WAIT_1) {		// ACK of FIN
-			this->cancelTimer(normal_socket->handshake_timer->timerUUID);
-			normal_socket->handshake_timer = NULL;
+			if (normal_socket->handshake_timer != NULL) {
+				this->cancelTimer(normal_socket->handshake_timer->timerUUID);
+				normal_socket->handshake_timer = NULL;
+			}
 			normal_socket->state = ST_FIN_WAIT_2;
 		}
 		else if (normal_socket->state == ST_CLOSING) {			// ACK of FIN
-			this->cancelTimer(normal_socket->handshake_timer->timerUUID);
-			normal_socket->handshake_timer = NULL;
+			if (normal_socket->handshake_timer != NULL) {
+				this->cancelTimer(normal_socket->handshake_timer->timerUUID);
+				normal_socket->handshake_timer = NULL;
+			}
 			normal_socket->state = ST_TIME_WAIT;
 		}
 	}
