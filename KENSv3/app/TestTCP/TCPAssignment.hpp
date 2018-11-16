@@ -50,6 +50,9 @@ struct socket_info {
 	std::map<std::pair<uint32_t, uint16_t>, int> acknum;
 	std::map<std::pair<uint32_t, uint16_t>, int> readnum;
 
+	int last_acknum;
+	int last_acknum_cnt;
+
 	uint32_t backlog;
 	
 	uint32_t src_ip;			// name of this socket

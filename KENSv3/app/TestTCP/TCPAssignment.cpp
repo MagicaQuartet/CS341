@@ -114,6 +114,8 @@ int TCPAssignment::syscall_socket(int pid) {
 	sock->state = ST_CLOSED;
 
 	sock->backlog = 0;
+	sock->last_acknum = 0;
+	sock->last_acknum_cnt = 0;
 
 	sock->src_ip = 0;
 	sock->src_port = 0;
@@ -505,6 +507,9 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 		new_socket->bind = false;
 
 		new_socket->backlog = 0;
+		new_socket->last_acknum = 0;
+		new_socket->last_acknum_cnt = 0;
+
 		new_socket->src_ip = sock->src_ip;
 		new_socket->src_port = sock->src_port;
 		new_socket->dest_ip = 0;
@@ -957,63 +962,82 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 					std::list<struct buf_elem*>::iterator it;
 
-					for (it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {			// remove data that the peer received from buffer
-						if ((*it)->seqnum + (*it)->size < ntohl(seqnum)) {																				// ... and adjust current data size in buffer
-							this->cancelTimer((*it)->timer->timerUUID);
-							connect_socket->write_buf_size -= (*it)->size;
-						}
-						else
-							break;
+					if (connect_socket->last_acknum != ntohl(acknum) || connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] < ntohl(acknum)) {
+						connect_socket->last_acknum = ntohl(acknum);
+						connect_socket->last_acknum_cnt = 1;
 					}
+					else
+						connect_socket->last_acknum_cnt++;
 
-					if (it != connect_socket->write_buf.end())
-						++it;
-					connect_socket->write_buf.erase(connect_socket->write_buf.begin(), it);
+					if (connect_socket->last_acknum_cnt < 3) {
+						for (it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {			// remove data that the peer received from buffer
+							if ((*it)->seqnum + (*it)->size < ntohl(acknum)) {																				// ... and adjust current data size in buffer
+								this->cancelTimer((*it)->timer->timerUUID);
+								connect_socket->write_buf_size -= (*it)->size;
+							}
+							else
+								break;
+						}
 
-					if (connect_socket->write_blocked != NULL) {																								// case: blocked write exists
-						struct buf_elem* elem = new buf_elem;
-						struct timer_info* timer = new timer_info;
-						uint8_t length[2];
-						int writable = BUFFERSIZE - connect_socket->write_buf_size;
-						int write_bytes = writable >= connect_socket->write_blocked->size ? connect_socket->write_blocked->size : writable;
+						if (it != connect_socket->write_buf.end())
+							++it;
+						connect_socket->write_buf.erase(connect_socket->write_buf.begin(), it);
 
-						elem->seqnum = connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)];
-						elem->size = write_bytes;
-						elem->data = (char *)calloc(sizeof(char), write_bytes+1);
-						memcpy(elem->data, connect_socket->write_blocked->data, write_bytes);
+						if (connect_socket->write_blocked != NULL) {																								// case: blocked write exists
+							struct buf_elem* elem = new buf_elem;
+							struct timer_info* timer = new timer_info;
+							int writable = BUFFERSIZE - connect_socket->write_buf_size;
+							int write_bytes = writable >= connect_socket->write_blocked->size ? connect_socket->write_blocked->size : writable;
 
-						new_packet = this->allocatePacket(54+write_bytes);
-						memset(TCPHeader, 0, 20);
-						*(uint32_t*)src_ip = connect_socket->src_ip;
-						*(uint32_t*)dest_ip = connect_socket->dest_ip;
-						*(uint32_t*)length = htons(write_bytes);
-						*(uint16_t*)TCPHeader = connect_socket->src_port;					// source port
-						*(uint16_t*)(TCPHeader+2) = connect_socket->dest_port;		// destination port
-						*(uint32_t*)(TCPHeader+4) = htonl(connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)]);	// sequence number
-						*(uint32_t*)(TCPHeader+8) = htonl(connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)]);
-						*(TCPHeader+12) = 0x50;													// header size in 4bytes
-						*(TCPHeader+13) = ACK;
-						*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);	// window size
-						new_packet->writeData(14+2, length, 2);
-						new_packet->writeData(14+12, src_ip, 4);
-						new_packet->writeData(14+16, dest_ip, 4);
+							elem->seqnum = connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)];
+							elem->size = write_bytes;
+							elem->data = (char *)calloc(sizeof(char), write_bytes+1);
+							memcpy(elem->data, connect_socket->write_blocked->data, write_bytes);
+
+							new_packet = this->allocatePacket(54+write_bytes);
+							memset(TCPHeader, 0, 20);
+							*(uint32_t*)src_ip = connect_socket->src_ip;
+							*(uint32_t*)dest_ip = connect_socket->dest_ip;
+							*(uint32_t*)length = htons(write_bytes);
+							*(uint16_t*)TCPHeader = connect_socket->src_port;					// source port
+							*(uint16_t*)(TCPHeader+2) = connect_socket->dest_port;		// destination port
+							*(uint32_t*)(TCPHeader+4) = htonl(connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)]);	// sequence number
+							*(uint32_t*)(TCPHeader+8) = htonl(connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)]);
+							*(TCPHeader+12) = 0x50;													// header size in 4bytes
+							*(TCPHeader+13) = ACK;
+							*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);	// window size
+							new_packet->writeData(14+2, length, 2);
+							new_packet->writeData(14+12, src_ip, 4);
+							new_packet->writeData(14+16, dest_ip, 4);
 	
-						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, (uint8_t*)elem->data, write_bytes, src_ip, dest_ip));
-						new_packet->writeData(14+20, TCPHeader, 20);
-						new_packet->writeData(14+20+20, elem->data, write_bytes);
+							*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, (uint8_t*)elem->data, write_bytes, src_ip, dest_ip));
+							new_packet->writeData(14+20, TCPHeader, 20);
+							new_packet->writeData(14+20+20, elem->data, write_bytes);
 		
-						timer->timerUUID = this->addTimer(timer, 100000000);
-						timer->socket = connect_socket;
-						timer->packet = this->clonePacket(new_packet);
-						elem->timer = timer;
+							timer->timerUUID = this->addTimer(timer, 100000000);
+							timer->socket = connect_socket;
+							timer->packet = this->clonePacket(new_packet);
+							elem->timer = timer;
 						
-						this->sendPacket("IPv4", new_packet);
-						this->returnSystemCall(connect_socket->write_blocked->syscallUUID, write_bytes);
-						connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] += write_bytes;
-						connect_socket->write_buf.push_back(elem);
-						connect_socket->write_buf_size += write_bytes;
-						delete connect_socket->write_blocked;
-						connect_socket->write_blocked = NULL;
+							this->sendPacket("IPv4", new_packet);
+							this->returnSystemCall(connect_socket->write_blocked->syscallUUID, write_bytes);
+							connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] += write_bytes;
+							connect_socket->write_buf.push_back(elem);
+							connect_socket->write_buf_size += write_bytes;
+							delete connect_socket->write_blocked;
+							connect_socket->write_blocked = NULL;
+						}
+					}
+					else {
+						for (std::list<struct buf_elem*>::iterator it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {
+							struct timer_info *timer = (*it)->timer;
+							Packet *packet = timer->packet;
+							
+							this->cancelTimer(timer->timerUUID);
+							timer->timerUUID = this->addTimer(timer, 100000000);
+							timer->packet = this->clonePacket(packet);
+							this->sendPacket("IPv4", packet);
+						}
 					}
 				}
 				else {																																						// ACK - data packet
@@ -1156,76 +1180,96 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		}
 		else if (normal_socket->state == ST_ESTABLISHED) {
 			if (ntohs(*(uint16_t*)length) == 40) {																										// ACK - response of data transfer
-				std::list<struct buf_elem*>::iterator it;
-
-				for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {		// remove data that the peer received from buffer
-					if ((*it)->seqnum + (*it)->size < ntohl(seqnum)) {																		// ... and adjust current data size in buffer
-						this->cancelTimer((*it)->timer->timerUUID);
-						normal_socket->write_buf_size -= (*it)->size;
+				std::list<struct buf_elem*>::iterator it;	
+				
+				if (normal_socket->last_acknum != ntohl(acknum) || normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] < ntohl(acknum)) {
+						normal_socket->last_acknum = ntohl(acknum);
+						normal_socket->last_acknum_cnt = 1;
 					}
-					else
-						break;
-				}
-
-				if (it != normal_socket->write_buf.end())
-					++it;
-				normal_socket->write_buf.erase(normal_socket->write_buf.begin(), it);
-
-				if (normal_socket->write_blocked != NULL) {																							// case: blocked write exists
-					int written_bytes = 0;
-
-					while (written_bytes < normal_socket->write_blocked->size) {
-						struct buf_elem* elem = new buf_elem;
-						struct timer_info* timer = new timer_info;
-						uint8_t length[2];
-						int writable = BUFFERSIZE - normal_socket->write_buf_size;
-						int write_bytes = writable >= normal_socket->write_blocked->size ? normal_socket->write_blocked->size : writable;
-						write_bytes = 512 > write_bytes ? write_bytes : 512;
-					
-						if (writable <= 0)
+				else
+					normal_socket->last_acknum_cnt++;
+				
+				if (normal_socket->last_acknum_cnt < 3) {
+					for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {		// remove data that the peer received from buffer
+						if ((*it)->seqnum + (*it)->size < ntohl(acknum)) {																		// ... and adjust current data size in buffer
+							this->cancelTimer((*it)->timer->timerUUID);
+							normal_socket->write_buf_size -= (*it)->size;
+						}
+						else
 							break;
-
-						elem->seqnum = normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
-						elem->size = write_bytes;
-						elem->data = (char *)calloc(sizeof(char), write_bytes+1);
-						memcpy(elem->data, normal_socket->write_blocked->data+written_bytes, write_bytes);
-
-						new_packet = this->allocatePacket(54+write_bytes);
-						memset(TCPHeader, 0, 20);
-						*(uint32_t*)src_ip = normal_socket->src_ip;
-						*(uint32_t*)dest_ip = normal_socket->dest_ip;
-						*(uint32_t*)length = htons(write_bytes);
-						*(uint16_t*)TCPHeader = normal_socket->src_port;																																										// source port
-						*(uint16_t*)(TCPHeader+2) = normal_socket->dest_port;																																								// destination port
-						*(uint32_t*)(TCPHeader+4) = htonl(normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);	// sequence number
-						*(uint32_t*)(TCPHeader+8) = htonl(normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);
-						*(TCPHeader+12) = 0x50;																																																							// header size in 4bytes
-						*(TCPHeader+13) = ACK;
-						*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);																																											// window size
-						new_packet->writeData(14+2, length, 2);
-						new_packet->writeData(14+12, src_ip, 4);
-						new_packet->writeData(14+16, dest_ip, 4);
-	
-						*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, (uint8_t*)elem->data, write_bytes, src_ip, dest_ip));
-						new_packet->writeData(14+20, TCPHeader, 20);
-						new_packet->writeData(14+20+20, elem->data, write_bytes);
-
-						timer->timerUUID = this->addTimer(timer, 100000000);
-						timer->socket = normal_socket;
-						timer->packet = this->clonePacket(new_packet);
-						elem->timer = timer;
-
-						this->sendPacket("IPv4", new_packet);
-						normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] += write_bytes;
-						normal_socket->write_buf.push_back(elem);
-						normal_socket->write_buf_size += write_bytes;
-
-						written_bytes += write_bytes;
 					}
 
-					this->returnSystemCall(normal_socket->write_blocked->syscallUUID, written_bytes);
-					delete normal_socket->write_blocked;
-					normal_socket->write_blocked = NULL;
+					if (it != normal_socket->write_buf.end())
+						++it;
+					normal_socket->write_buf.erase(normal_socket->write_buf.begin(), it);
+
+					if (normal_socket->write_blocked != NULL) {																							// case: blocked write exists
+						int written_bytes = 0;
+
+						while (written_bytes < normal_socket->write_blocked->size) {
+							struct buf_elem* elem = new buf_elem;
+							struct timer_info* timer = new timer_info;
+							uint8_t length[2];
+							int writable = BUFFERSIZE - normal_socket->write_buf_size;
+							int write_bytes = writable >= normal_socket->write_blocked->size ? normal_socket->write_blocked->size : writable;
+							write_bytes = 512 > write_bytes ? write_bytes : 512;
+					
+							if (writable <= 0)
+								break;
+
+							elem->seqnum = normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
+							elem->size = write_bytes;
+							elem->data = (char *)calloc(sizeof(char), write_bytes+1);
+							memcpy(elem->data, normal_socket->write_blocked->data+written_bytes, write_bytes);
+
+							new_packet = this->allocatePacket(54+write_bytes);
+							memset(TCPHeader, 0, 20);
+							*(uint32_t*)src_ip = normal_socket->src_ip;
+							*(uint32_t*)dest_ip = normal_socket->dest_ip;
+							*(uint32_t*)length = htons(write_bytes);
+							*(uint16_t*)TCPHeader = normal_socket->src_port;																																										// source port
+							*(uint16_t*)(TCPHeader+2) = normal_socket->dest_port;																																								// destination port
+							*(uint32_t*)(TCPHeader+4) = htonl(normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);	// sequence number
+							*(uint32_t*)(TCPHeader+8) = htonl(normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)]);
+							*(TCPHeader+12) = 0x50;																																																							// header size in 4bytes
+							*(TCPHeader+13) = ACK;
+							*(uint16_t*)(TCPHeader+14) = htons(WINDOWSIZE);																																											// window size
+							new_packet->writeData(14+2, length, 2);
+							new_packet->writeData(14+12, src_ip, 4);
+							new_packet->writeData(14+16, dest_ip, 4);
+	
+							*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, (uint8_t*)elem->data, write_bytes, src_ip, dest_ip));
+							new_packet->writeData(14+20, TCPHeader, 20);
+							new_packet->writeData(14+20+20, elem->data, write_bytes);
+
+							timer->timerUUID = this->addTimer(timer, 100000000);
+							timer->socket = normal_socket;
+							timer->packet = this->clonePacket(new_packet);
+							elem->timer = timer;
+
+							this->sendPacket("IPv4", new_packet);
+							normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] += write_bytes;
+							normal_socket->write_buf.push_back(elem);
+							normal_socket->write_buf_size += write_bytes;
+
+							written_bytes += write_bytes;
+						}
+
+						this->returnSystemCall(normal_socket->write_blocked->syscallUUID, written_bytes);
+						delete normal_socket->write_blocked;
+						normal_socket->write_blocked = NULL;
+					}
+				}
+				else {
+					for (std::list<struct buf_elem*>::iterator it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {
+						struct timer_info *timer = (*it)->timer;
+						Packet *packet = timer->packet;
+							
+						this->cancelTimer(timer->timerUUID);
+						timer->timerUUID = this->addTimer(timer, 100000000);
+						timer->packet = this->clonePacket(packet);
+						this->sendPacket("IPv4", packet);
+					}
 				}
 			}
 			else {																																								// ACK - data packet
