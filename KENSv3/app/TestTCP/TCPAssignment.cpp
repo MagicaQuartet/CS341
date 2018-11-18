@@ -266,7 +266,7 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, src_ip, dest_ip));
 				packet->writeData(14+20, TCPHeader, 20);
 
-				if (sock->write_history.empty() && (!sock->read_history.empty() && nextAcknum(sock) > (*sock->read_history.rbegin())->seqnum)) {
+				if (sock->write_history.empty() || (!sock->read_history.empty() && nextAcknum(sock) > (*sock->read_history.rbegin())->seqnum)) {
 					this->sendPacket("IPv4", packet);
 					if (sock->state == ST_ESTABLISHED)
 						sock->state = ST_FIN_WAIT_1;	
@@ -1630,6 +1630,17 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
 				normal_socket = *it;
 				break;
+			}
+		}
+	
+		if (connect_socket != NULL){
+			if (connect_socket->write_history.empty() || (!connect_socket->read_history.empty() && nextAcknum(connect_socket) != (*connect_socket->read_history.rbegin())->seqnum + (*connect_socket->read_history.rbegin())->size)) {
+				return;
+			}
+		}
+		else if (normal_socket != NULL) {
+			if (normal_socket->write_history.empty() || (!normal_socket->read_history.empty() && nextAcknum(normal_socket) != (*normal_socket->read_history.rbegin())->seqnum + (*normal_socket->read_history.rbegin())->size)) {
+				return;
 			}
 		}
 
