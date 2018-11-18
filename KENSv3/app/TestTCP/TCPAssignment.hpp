@@ -29,15 +29,15 @@ struct timer_info {
 };
 
 struct packet_info {
-	int seqnum;
-	int size;
+	uint32_t seqnum;
+	uint32_t size;
 	struct timer_info* timer;
 };
 
 struct buf_elem {									// element of write_buf and read_buf
 	UUID syscallUUID;								// syscallUUID of write/read call
-	int seqnum;											// sequence number when write/read is called
-	int size;												// size parameter
+	uint32_t seqnum;											// sequence number when write/read is called
+	uint32_t size;												// size parameter
 	char *data;											// buffer pointer parameter
 };
 
@@ -50,12 +50,12 @@ struct socket_info {
 	bool bind;											// bound or not
 	int state;
 
-	std::map<std::pair<uint32_t, uint16_t>, int> seqnum;				// sequence number for each connection
+	std::map<std::pair<uint32_t, uint16_t>, uint32_t> seqnum;				// sequence number for each connection
 																															// | (<destination ip>, <destination port>) can distinguish every connection
-	std::map<std::pair<uint32_t, uint16_t>, int> acknum;
-	std::map<std::pair<uint32_t, uint16_t>, int> readnum;
+	std::map<std::pair<uint32_t, uint16_t>, uint32_t> acknum;
+	std::map<std::pair<uint32_t, uint16_t>, uint32_t> readnum;
 
-	int last_acknum;
+	uint32_t last_acknum;
 	int last_acknum_cnt;
 
 	uint32_t backlog;
@@ -68,11 +68,12 @@ struct socket_info {
 	std::list<struct buf_elem*> write_buf;		// write buffer
 	int write_buf_size;												// write buffer size
 	struct buf_elem* write_blocked;						// blocked write call
-	std::list<struct packet_info*> sent_packet;
+	std::list<struct packet_info*> write_history;
 
 	std::list<struct buf_elem*> read_buf;			// read buffer
 	int read_buf_size;												// read buffer size
 	struct buf_elem* read_blocked;						// blocked read
+	std::list<uint32_t> read_history;
 
 	struct timer_info* handshake_timer;
 	Packet *FIN_packet;
