@@ -138,6 +138,23 @@ uint16_t checkChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *s
 	return (uint16_t)sum + 1;
 }
 
+int nextAcknum (struct socket_info* socket) {
+	int acknum = 1;
+
+	for (std::list<struct history_info*>::iterator it=socket->read_history.begin(); it!=socket->read_history.end(); ++it) {
+		if (acknum == 1) {
+			acknum = (*it)->seqnum;
+			acknum += (*it)->size;
+		}
+		else if (acknum == (*it)->seqnum)
+			acknum += (*it)->size;
+		else
+			break;
+	}
+	
+	return acknum;
+}
+
 /* SOCKET */
 
 int TCPAssignment::syscall_socket(int pid) {
@@ -247,7 +264,7 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, src_ip, dest_ip));
 				packet->writeData(14+20, TCPHeader, 20);
 
-				if (sock->write_history.empty()) {
+				if (sock->write_history.empty() && (!sock->read_history.empty() && nextAcknum(sock) > (*sock->read_history.rbegin())->seqnum)) {
 					this->sendPacket("IPv4", packet);
 					if (sock->state == ST_ESTABLISHED)
 						sock->state = ST_FIN_WAIT_1;	
@@ -292,10 +309,10 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 		int remainder = size;																														// remainder: the amount of remaining data to read
 
 		while (remainder > 0) {
-			if (!sock->read_buf.empty()) {																								// case 1: buffer has data
+			if (!sock->read_buf.empty() && nextAcknum(sock) >= sock->read_buf.front()->seqnum) {																								// case 1: buffer has data
 				struct buf_elem* elem = sock->read_buf.front();
 				int read_bytes = remainder > elem->size ? elem->size : remainder;
-				//printf("						>>> read data (%d)\n", elem->seqnum);
+				//printf("						>>> read (%d, %d of %d)\n", elem->seqnum, read_bytes, elem->size);
 
 				memcpy(buf+total_read_bytes, elem->data, read_bytes);
 				sock->read_buf_size -= read_bytes;
@@ -307,7 +324,7 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 					elem->size -= read_bytes;
 					break;
 				}
-				else{
+				else {
 					sock->read_buf.pop_front();
 					free(elem->data);
 					delete elem;
@@ -319,7 +336,14 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 
 		if (total_read_bytes > 0) {																											// case 1: the socket read incoming data
 			//printf("						>>> read (%d)\n", total_read_bytes);
-			this->returnSystemCall(syscallUUID, total_read_bytes);												// ... return
+			this->returnSystemCall(syscallUUID, total_read_bytes);
+			
+			if (!sock->read_history.empty() && (*sock->read_history.rbegin())->seqnum < nextAcknum(sock) && sock->FIN_packet != NULL) {
+						this->sendPacket("IPv4", sock->FIN_packet);
+						if (sock->state == ST_ESTABLISHED)
+							sock->state = ST_FIN_WAIT_1;
+						sock->FIN_packet = NULL;
+					}												// ... return
 		}
 		else {																																					// case 2: no incoming data
 			struct buf_elem* elem = new buf_elem;																					// ... block
@@ -466,7 +490,6 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		sock->dest_port = ptr->sin_port;
 		sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)] = 0;
 		sock->parent->acknum[std::make_pair(sock->dest_ip, sock->dest_port)] = 0;
-		sock->parent->readnum[std::make_pair(sock->dest_ip, sock->dest_port)] = 0;
 		
 		// create SYN packet
 		packet = this->allocatePacket(54);
@@ -797,7 +820,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 {
 	uint8_t length[2], src_ip[4], dest_ip[4], src_port[2], dest_port[2], TCPHeader[20], data[512];
 	uint8_t bits;
-	uint32_t seqnum, acknum, new_seqnum, new_acknum;
+	int seqnum, acknum, new_seqnum, new_acknum;
 	Packet *new_packet;
 	struct socket_info* sock;
 
@@ -814,7 +837,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+20, data, ntohs(*(uint16_t*)length)-40);
 
 //	printf("									>>> bits 0x%x\n", bits);
-
+	if (checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip) != 0)
+		return;
 //	printf("								>>> sum %d\n", checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip));
 
 	if (bits & SYN && ~bits & ACK && ~bits & FIN) {
@@ -876,7 +900,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						new_seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
 
 						sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
-						sock->parent->readnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
 						new_acknum = htonl(ntohl(seqnum)+1);
 
 						new_packet->writeData(14+12, dest_ip, 4);
@@ -921,7 +944,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = 0;								// initialize sequence number for new connection
 				new_seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
 				sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
-				sock->parent->readnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
 				new_acknum = htonl(ntohl(seqnum)+1);
 
 				new_packet->writeData(14+12, dest_ip, 4);
@@ -978,7 +1000,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] += 1;
 			new_seqnum = htonl(sock->parent->seqnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)]);
 			sock->parent->acknum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
-			sock->parent->readnum[std::make_pair(*(uint32_t*)src_ip, *(uint16_t*)src_port)] = ntohl(seqnum)+1;
 			new_acknum = htonl(ntohl(seqnum)+1);
 			
 			new_packet->writeData(14+12, dest_ip, 4);
@@ -1183,38 +1204,40 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				}
 				else {																																						// ACK - data packet
 					int datasize = ntohs(*(uint16_t*)length) - 40;
-					int cur_acknum, cur_readnum;
-					bool duplicate = false, checksum = true;
-					std::list<uint32_t>::iterator it;
+					int cur_acknum;
+					bool duplicate = false;
+					std::list<struct history_info*>::iterator it;
 					
 					cur_acknum = connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)];
-					cur_readnum = connect_socket->parent->readnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)];
 
 					for (it=connect_socket->read_history.begin(); it!=connect_socket->read_history.end(); ++it) {
-						if (*it == ntohl(seqnum)) {
+						if ((*it)->seqnum == ntohl(seqnum)) {
 							duplicate = true;
 							break;
 						}
-						else if (*it > ntohl(seqnum))
+						else if ((*it)->seqnum > ntohl(seqnum))
 							break;
 					}
 
-					if (checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip) != 0)
-						checksum = false;
+					if (!duplicate) {
+						struct history_info* hinfo = new history_info;
+						hinfo->seqnum = ntohl(seqnum);
+						hinfo->size = datasize;
+						connect_socket->read_history.insert(it, hinfo);
 
-					if (!duplicate && checksum) {
-						connect_socket->read_history.insert(it, ntohl(seqnum));
+						if (connect_socket->read_blocked != NULL && (cur_acknum == 1 || cur_acknum == ntohl(seqnum))) {																			// case 1: blocked read exists
 
-						if (connect_socket->read_blocked != NULL && cur_acknum == ntohl(seqnum)) {																			// case 1: blocked read exists
 							int read_bytes = datasize > connect_socket->read_blocked->size ? connect_socket->read_blocked->size : datasize;
 							packet->readData(14+20+20, connect_socket->read_blocked->data, read_bytes);
 	
+							//printf("						>>> blocked read (%d, %d of %d)\n", ntohl(seqnum), read_bytes, datasize);
 							if (read_bytes < datasize) {
 								struct buf_elem *elem = new buf_elem;
+								elem->seqnum = ntohl(seqnum);
 								elem->size = datasize-read_bytes;
 								elem->data = (char *)calloc(elem->size, sizeof(char));
 								packet->readData(14+20+20+read_bytes, elem->data, elem->size);
-								connect_socket->read_buf.push_back(elem);
+								connect_socket->read_buf.push_front(elem);
 								connect_socket->read_buf_size += elem->size;
 							}
 
@@ -1246,31 +1269,9 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							}
 						}	
 					}
+
+					connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] = nextAcknum(connect_socket);
 					
-					if (cur_acknum == cur_readnum) {
-						if (cur_acknum == ntohl(seqnum)) {
-							connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] += datasize;
-							connect_socket->parent->readnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] = cur_acknum + datasize;
-						}
-						else if (cur_acknum > ntohl(seqnum)) {
-							// do nothing
-						}
-						else {
-							connect_socket->parent->readnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] = ntohl(seqnum) + datasize;
-						}
-					}
-					else if (cur_acknum < cur_readnum) {
-						if (cur_readnum <= ntohl(seqnum)) {
-							connect_socket->parent->readnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] = ntohl(seqnum) + datasize;
-						}
-						else if (cur_acknum == ntohl(seqnum)) {
-							connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] = cur_readnum;
-						}
-						else {
-							// do nothing
-						}
-					}
-		
 					new_packet = this->allocatePacket(54);
 					memset(TCPHeader, 0, 20);
 					*(uint16_t*)length = htons(40);
@@ -1291,6 +1292,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					new_packet->writeData(14+20, TCPHeader, 20);
 		
 					this->sendPacket("IPv4", new_packet);																																																		// send ACK response
+					
+					if ((*connect_socket->read_history.rbegin())->seqnum < nextAcknum(connect_socket) && connect_socket->FIN_packet != NULL) {
+						this->sendPacket("IPv4", connect_socket->FIN_packet);
+						if (connect_socket->state == ST_ESTABLISHED)
+							connect_socket->state = ST_FIN_WAIT_1;
+						connect_socket->FIN_packet = NULL;
+					}
 				}
 			}
 		}
@@ -1477,38 +1485,39 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			else {																																								// ACK - data packet
 				int datasize = ntohs(*(uint16_t*)length) - 40;
-				int cur_acknum, cur_readnum;
-				bool duplicate = false, checksum = true;
-				std::list<uint32_t>::iterator it;
+				int cur_acknum;
+				bool duplicate = false;
+				std::list<struct history_info*>::iterator it;
 			
 				cur_acknum = normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
-				cur_readnum = normal_socket->parent->readnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
 
 				for (it=normal_socket->read_history.begin(); it!=normal_socket->read_history.end(); ++it) {
-					if (*it == ntohl(seqnum)) {
+					if ((*it)->seqnum == ntohl(seqnum)) {
 						duplicate = true;
 						break;
 					}
-					else if (*it > ntohl(seqnum))
+					else if ((*it)->seqnum > ntohl(seqnum))
 						break;
 				}	
-				
-				if (checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip) != 0)
-					checksum = false;
 
-				if (!duplicate && checksum) {
-					normal_socket->read_history.insert(it, ntohl(seqnum));
+				if (!duplicate) {
+					struct history_info* hinfo = new history_info;
+					hinfo->seqnum = ntohl(seqnum);
+					hinfo->size = datasize;
+					normal_socket->read_history.insert(it, hinfo);
 
-					if (normal_socket->read_blocked != NULL && cur_acknum == ntohl(seqnum)) {																					// case 1: blocked read exists
+					if (normal_socket->read_blocked != NULL && (cur_acknum == 1 || cur_acknum == ntohl(seqnum))) {																					// case 1: blocked read exists
 						int read_bytes = datasize > normal_socket->read_blocked->size ? normal_socket->read_blocked->size : datasize;
 						packet->readData(14+20+20, normal_socket->read_blocked->data, read_bytes);	
 	
+						//printf("						>>> blocked read (%d, %d of %d)\n", ntohl(seqnum), read_bytes, datasize);
 						if (read_bytes < datasize) {
 							struct buf_elem *elem = new buf_elem;
+							elem->seqnum = ntohl(seqnum);
 							elem->size = datasize-read_bytes;
 							elem->data = (char *)calloc(elem->size, sizeof(char));
 							packet->readData(14+20+20+read_bytes, elem->data, elem->size);
-							normal_socket->read_buf.push_back(elem);
+							normal_socket->read_buf.push_front(elem);
 							normal_socket->read_buf_size += elem->size;
 						}
 
@@ -1532,39 +1541,18 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						if (!buf_duplicate) {
 
 							struct buf_elem *elem = new buf_elem;																							// ... add the data into buffer
+							elem->seqnum = ntohl(seqnum);
 							elem->size = datasize;
 							elem->data = (char *)calloc(elem->size, sizeof(char));
 							packet->readData(14+20+20, elem->data, elem->size);
 
-							normal_socket->read_buf.push_back(elem);
+							normal_socket->read_buf.insert(buf_it, elem);
 							normal_socket->read_buf_size += elem->size;
 						}
 					}	
-	
-					if (cur_acknum == cur_readnum) {
-						if (cur_acknum == ntohl(seqnum)) {
-							normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] += datasize;
-							normal_socket->parent->readnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] = cur_acknum + datasize;
-						}
-						else if (cur_acknum > ntohl(seqnum)) {
-							// do nothing
-						}
-						else {
-							normal_socket->parent->readnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] = ntohl(seqnum) + datasize;
-						}
-					}
-					else if (cur_acknum < cur_readnum) {
-						if (cur_readnum <= ntohl(seqnum)) {
-							normal_socket->parent->readnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] = ntohl(seqnum) + datasize;
-						}
-						else if (cur_acknum == ntohl(seqnum)) {
-							normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] = cur_readnum;
-						}
-						else {
-							// do nothing
-						}
-					}
 				}
+					
+				normal_socket->parent->acknum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)] = nextAcknum(normal_socket);
 		
 				new_packet = this->allocatePacket(54);
 				memset(TCPHeader, 0, 20);
@@ -1586,6 +1574,13 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				new_packet->writeData(14+20, TCPHeader, 20);
 		
 				this->sendPacket("IPv4", new_packet);	
+				
+				if ((*normal_socket->read_history.rbegin())->seqnum < nextAcknum(normal_socket) && normal_socket->FIN_packet != NULL) {
+						this->sendPacket("IPv4", normal_socket->FIN_packet);
+						if (normal_socket->state == ST_ESTABLISHED)
+							normal_socket->state = ST_FIN_WAIT_1;
+						normal_socket->FIN_packet = NULL;
+				}
 			}
 		}
 		else if (normal_socket->state == ST_LAST_ACK) {			// ACK of FIN (but it is not important because the socket is closed)
