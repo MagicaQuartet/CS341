@@ -56,6 +56,7 @@ void TCPAssignment::finalize()
 
 /* helper functions */
 
+// make a checksum with given TCP header, data, source ip and destination ip
 uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *src_ip, uint8_t *dest_ip) {
 	uint32_t sum = 0;
 
@@ -97,6 +98,7 @@ uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *sr
 	return (uint16_t)~sum;
 }
 
+// check packet corruption by checksum
 uint16_t checkChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *src_ip, uint8_t *dest_ip) {
 	uint32_t sum = 0;
 
@@ -138,6 +140,7 @@ uint16_t checkChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *s
 	return (uint16_t)sum + 1;
 }
 
+// find the next sequence number of the packet that should arrives next
 int nextAcknum (struct socket_info* socket) {
 	int acknum = 1;
 	bool start = false;
@@ -265,7 +268,8 @@ void TCPAssignment::syscall_close(int pid, int fd) {
 			
 				*(uint16_t*)(TCPHeader+16) = htons(makeChecksum(TCPHeader, NULL, 0, src_ip, dest_ip));
 				packet->writeData(14+20, TCPHeader, 20);
-
+				
+				// if data transfer is not accomplished yet, postpone connection teardown
 				if (sock->write_history.empty() || (!sock->read_history.empty() && nextAcknum(sock) > (*sock->read_history.rbegin())->seqnum)) {
 					this->sendPacket("IPv4", packet);
 					if (sock->state == ST_ESTABLISHED)
@@ -311,10 +315,9 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 		int remainder = size;																														// remainder: the amount of remaining data to read
 
 		while (remainder > 0) {
-			if (!sock->read_buf.empty() && nextAcknum(sock) >= sock->read_buf.front()->seqnum) {																								// case 1: buffer has data
+			if (!sock->read_buf.empty() && nextAcknum(sock) >= sock->read_buf.front()->seqnum) {						// case 1: buffer has data and data in read_buf is in right order
 				struct buf_elem* elem = sock->read_buf.front();
 				int read_bytes = remainder > elem->size ? elem->size : remainder;
-//				printf("						>>> read (%d, %d of %d)\n", elem->seqnum, read_bytes, elem->size);
 
 				memcpy(buf+total_read_bytes, elem->data, read_bytes);
 				sock->read_buf_size -= read_bytes;
@@ -332,12 +335,11 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 					delete elem;
 				}	
 			}
-			else																																					// case 2: no more data in the buffer
+			else																																					// case 2: no more data in the buffer or data in read_buf is not in right order
 				break;
 		}
 
-		if (total_read_bytes > 0) {																											// case 1: the socket read incoming data
-			//printf("						>>> read (%d)\n", total_read_bytes);
+		if (total_read_bytes > 0) {																											// case 1: the socket read data
 			this->returnSystemCall(syscallUUID, total_read_bytes);
 			
 			if (!sock->read_history.empty() && (*sock->read_history.rbegin())->seqnum < nextAcknum(sock) && sock->FIN_packet != NULL) {
@@ -347,7 +349,7 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 						sock->FIN_packet = NULL;
 					}												// ... return
 		}
-		else {																																					// case 2: no incoming data
+		else {																																					// case 2: no data read yet
 			struct buf_elem* elem = new buf_elem;																					// ... block
 			elem->syscallUUID = syscallUUID;
 			elem->size = size;
@@ -423,7 +425,6 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 				packet->writeData(14+20+20, elem->data, write_bytes);																											// add data segment
 
 				pinfo->seqnum = sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)];
-//				printf("										>>> data transfer (write, %d)\n", pinfo->seqnum);
 				pinfo->size = write_bytes;
 				
 				timer->timerUUID = this->addTimer(timer, TIMEAFTER);
@@ -757,7 +758,6 @@ int TCPAssignment::syscall_getpeername(int pid, int fd, struct sockaddr *addr, s
 void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param)
 {
 	int ret;
-//	printf("											>>> syscall %d\n", param.syscallNumber);
 
 	switch(param.syscallNumber)
 	{
@@ -835,13 +835,12 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	packet->readData(14+20+4, (uint8_t*)&seqnum, 4);	// sequence number
 	packet->readData(14+20+8, (uint8_t*)&acknum, 4);	// acknowledge number
 	packet->readData(14+20+13, &bits, 1);							// flag
-	packet->readData(14+20, TCPHeader, 20);
-	packet->readData(14+20+20, data, ntohs(*(uint16_t*)length)-40);
 
-//	printf("									>>> bits 0x%x\n", bits);
-	if (checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip) != 0)
+	packet->readData(14+20, TCPHeader, 20);														// TCP header
+	packet->readData(14+20+20, data, ntohs(*(uint16_t*)length)-40);		// data
+
+	if (checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip) != 0)		// if the packet is corrupted, ignore it
 		return;
-//	printf("								>>> sum %d\n", checkChecksum(TCPHeader, data, ntohs(*(uint16_t*)length)-40, src_ip, dest_ip));
 
 	if (bits & SYN && ~bits & ACK && ~bits & FIN) {
 		// SYN
@@ -990,8 +989,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 		}	
 
-		if (sock != NULL) {
-			// complete connection
+		if (sock != NULL) {									// the first SYNACK
 			sock->state = ST_ESTABLISHED;
 			if (sock->handshake_timer != NULL) {
 				this->cancelTimer(sock->handshake_timer->timerUUID);
@@ -1021,7 +1019,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			this->sendPacket("IPv4", new_packet);
 			this->returnSystemCall(uuid, 0);
 		}
-		else {
+		else {															// retransmitted SYNACK
 			for (std::list<struct socket_info*>::iterator it=this->socket_list.begin(); it!=this->socket_list.end(); ++it) {
 				if (((*it)->src_ip == 0 || (*it)->src_ip == *(uint32_t*)dest_ip) && (*it)->src_port == *(uint16_t*)dest_port) {
 					sock = *it;
@@ -1089,17 +1087,16 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						return;
 					std::list<struct buf_elem*>::iterator it;
 
-					if (connect_socket->last_acknum != (int)ntohl(acknum)) {
+					if (connect_socket->last_acknum != (int)ntohl(acknum)) {					// check duplicate
 						connect_socket->last_acknum = (int)ntohl(acknum);
 						connect_socket->last_acknum_cnt = 1;
 					}
 					else
 						connect_socket->last_acknum_cnt++;
 
-					if (connect_socket->last_acknum_cnt < 3) {
+					if (connect_socket->last_acknum_cnt < 3) {												// no fast retransmit
 						for (it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {			// remove data that the peer received from buffer
-							if ((*it)->seqnum + (*it)->size < (int)ntohl(acknum)) {																				// ... and adjust current data size in buffer
-								//this->cancelTimer((*it)->timer->timerUUID);
+							if ((*it)->seqnum + (*it)->size < (int)ntohl(acknum)) {																		// ... and adjust current data size in buffer
 								connect_socket->write_buf_size -= (*it)->size;
 							}
 							else
@@ -1108,7 +1105,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 						connect_socket->write_buf.erase(connect_socket->write_buf.begin(), it);
 
-						while (!connect_socket->write_history.empty()) {
+						while (!connect_socket->write_history.empty()) {																						// remove information of ACKed packet
 							struct packet_info* pinfo = connect_socket->write_history.front();
 							if (pinfo->seqnum < (int)ntohl(acknum)) {
 								this->cancelTimer(pinfo->timer->timerUUID);
@@ -1178,16 +1175,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							connect_socket->write_blocked = NULL;
 						}
 					}
-					else {
-//						for (std::list<struct buf_elem*>::iterator it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {
-//							struct timer_info *timer = (*it)->timer;
-//							Packet *packet = timer->packet;
-//							
-//							this->cancelTimer(timer->timerUUID);
-//							timer->timerUUID = this->addTimer(timer, TIMEAFTER);
-//							timer->packet = this->clonePacket(packet);
-//							this->sendPacket("IPv4", packet);
-//						}
+					else {			// fast retransmit
 						struct timer_info *timer = connect_socket->write_history.front()->timer;
 						Packet *packet = timer->packet;
 
@@ -1212,7 +1200,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					
 					cur_acknum = connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)];
 
-					for (it=connect_socket->read_history.begin(); it!=connect_socket->read_history.end(); ++it) {
+					for (it=connect_socket->read_history.begin(); it!=connect_socket->read_history.end(); ++it) { 		// check duplicate
 						if ((*it)->seqnum == (int)ntohl(seqnum)) {
 							duplicate = true;
 							break;
@@ -1221,18 +1209,17 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							break;
 					}
  
-					if (!duplicate) {
+					if (!duplicate) {																																									// read or save data only if it is not duplicate
 						struct history_info* hinfo = new history_info;
 						hinfo->seqnum = (int)ntohl(seqnum);
 						hinfo->size = datasize;
 						connect_socket->read_history.insert(it, hinfo);
 
-						if (connect_socket->read_blocked != NULL && (connect_socket->read_history.size() == 1 || cur_acknum == (int)ntohl(seqnum))) {																			// case 1: blocked read exists
+						if (connect_socket->read_blocked != NULL && (connect_socket->read_history.size() == 1 || cur_acknum == (int)ntohl(seqnum))) {			// case 1: blocked read exists and arriving packet is in right order
 
 							int read_bytes = datasize > connect_socket->read_blocked->size ? connect_socket->read_blocked->size : datasize;
 							packet->readData(14+20+20, connect_socket->read_blocked->data, read_bytes);
 	
-//							printf("						>>> blocked read (%d, %d of %d)\n", (int)ntohl(seqnum), read_bytes, datasize);
 							if (read_bytes < datasize) {
 								struct buf_elem *elem = new buf_elem;
 								elem->seqnum = (int)ntohl(seqnum);
@@ -1246,7 +1233,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							this->returnSystemCall(connect_socket->read_blocked->syscallUUID, read_bytes);
 							connect_socket->read_blocked = NULL;
 						}
-						else {																																					// case 2: no blocked read
+						else {																																					// case 2: no blocked read or arriving packet is out of order
 							std::list<struct buf_elem*>::iterator buf_it;
 							bool buf_duplicate = false;
 
@@ -1259,8 +1246,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 									break;
 							}
 
-							if (!buf_duplicate) {
-								struct buf_elem *elem = new buf_elem;																					// ... add the data into buffer
+							if (!buf_duplicate) {											// save the data only if it is not in read_buf
+								struct buf_elem *elem = new buf_elem;
 								elem->seqnum = (int)ntohl(seqnum);
 								elem->size = datasize;
 								elem->data = (char *)calloc(elem->size, sizeof(char));
@@ -1272,6 +1259,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						}	
 					}
 
+					// if the next packet arrives in right order, its sequence number should be nextAcknum() except duplicates
 					connect_socket->parent->acknum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)] = nextAcknum(connect_socket);
 					
 					new_packet = this->allocatePacket(54);
@@ -1295,7 +1283,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		
 					this->sendPacket("IPv4", new_packet);																																																		// send ACK response
 					
-					if ((*connect_socket->read_history.rbegin())->seqnum < nextAcknum(connect_socket) && connect_socket->FIN_packet != NULL) {
+					if ((*connect_socket->read_history.rbegin())->seqnum < nextAcknum(connect_socket) && connect_socket->FIN_packet != NULL) {							// check postponed FIN
 						this->sendPacket("IPv4", connect_socket->FIN_packet);
 						if (connect_socket->state == ST_ESTABLISHED)
 							connect_socket->state = ST_FIN_WAIT_1;
@@ -1365,12 +1353,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				std::list<struct buf_elem*>::iterator it;	
 				
 				if (normal_socket->last_acknum != (int)ntohl(acknum)) {
-//					printf("						>>> new ack: %d\n", (int)ntohl(acknum));
 					normal_socket->last_acknum = (int)ntohl(acknum);
 					normal_socket->last_acknum_cnt = 1;
 				}
 				else {
-				//	printf("						>>> duplicate ack: %d\n", (int)ntohl(acknum));
 					normal_socket->last_acknum_cnt++;
 				}
 				
@@ -1437,7 +1423,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							new_packet->writeData(14+20+20, elem->data, write_bytes);
 
 							pinfo->seqnum = normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
-//							printf("										>>> data transfer (blocked, %d)\n", pinfo->seqnum);
 							pinfo->size = write_bytes;
 
 							timer->timerUUID = this->addTimer(timer, TIMEAFTER);
@@ -1460,15 +1445,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					}
 				}
 				else {
-//					for (std::list<struct packet_info*>::iterator it=normal_socket->write_history.begin(); it!=normal_socket->write_history.end(); ++it) {
-//						struct timer_info *timer = (*it)->timer;
-//						Packet *packet = timer->packet;
-//							
-//						this->cancelTimer(timer->timerUUID);
-//						timer->timerUUID = this->addTimer(timer, TIMEAFTER);
-//						timer->packet = this->clonePacket(packet);
-//						this->sendPacket("IPv4", packet);
-//					}
 					struct timer_info *timer = normal_socket->write_history.front()->timer;
 					Packet *packet = timer->packet;
 
@@ -1478,7 +1454,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					this->sendPacket("IPv4", packet);
 				}
 
-				if (normal_socket->write_history.empty() && normal_socket->FIN_packet != NULL) {
+				if (normal_socket->write_history.empty() && normal_socket->FIN_packet != NULL) {		// check postponed FIN
 					this->sendPacket("IPv4", normal_socket->FIN_packet);
 					if (normal_socket->state == ST_ESTABLISHED)
 						normal_socket->state = ST_FIN_WAIT_1;
@@ -1508,11 +1484,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					hinfo->size = datasize;
 					normal_socket->read_history.insert(it, hinfo);
 
-					if (normal_socket->read_blocked != NULL && (normal_socket->read_history.size() == 1 || cur_acknum == (int)(int)ntohl(seqnum))) {																					// case 1: blocked read exists
+					if (normal_socket->read_blocked != NULL && (normal_socket->read_history.size() == 1 || cur_acknum == (int)(int)ntohl(seqnum))) {	// case 1: blocked read exists and arriving packet is in right order
 						int read_bytes = datasize > normal_socket->read_blocked->size ? normal_socket->read_blocked->size : datasize;
 						packet->readData(14+20+20, normal_socket->read_blocked->data, read_bytes);	
 	
-//						printf("						>>> blocked read (%d, %d of %d)\n", (int)ntohl(seqnum), read_bytes, datasize);
 						if (read_bytes < datasize) {
 							struct buf_elem *elem = new buf_elem;
 							elem->seqnum = (int)ntohl(seqnum);
@@ -1523,11 +1498,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							normal_socket->read_buf_size += elem->size;
 						}
 
-//					printf("						>>> blocked read (%d)\n", read_bytes);
 						this->returnSystemCall(normal_socket->read_blocked->syscallUUID, read_bytes);
 						normal_socket->read_blocked = NULL;
 					}
-					else {																																							// case 2: no blocked read
+					else {																																							// case 2: no blocked read or arriving packet is out of order
 						std::list<struct buf_elem*>::iterator buf_it;
 						bool buf_duplicate = false;
 
@@ -1540,9 +1514,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 								break;
 						}
 
-						if (!buf_duplicate) {
-
-							struct buf_elem *elem = new buf_elem;																							// ... add the data into buffer
+						if (!buf_duplicate) {																		// save it in read_buf only if the packet is not in the buffer
+							struct buf_elem *elem = new buf_elem;
 							elem->seqnum = (int)ntohl(seqnum);
 							elem->size = datasize;
 							elem->data = (char *)calloc(elem->size, sizeof(char));
@@ -1577,7 +1550,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		
 				this->sendPacket("IPv4", new_packet);	
 				
-				if ((*normal_socket->read_history.rbegin())->seqnum < nextAcknum(normal_socket) && normal_socket->FIN_packet != NULL) {
+				if ((*normal_socket->read_history.rbegin())->seqnum < nextAcknum(normal_socket) && normal_socket->FIN_packet != NULL) {		// check postponed FIN
 						this->sendPacket("IPv4", normal_socket->FIN_packet);
 						if (normal_socket->state == ST_ESTABLISHED)
 							normal_socket->state = ST_FIN_WAIT_1;
@@ -1774,16 +1747,6 @@ void TCPAssignment::timerCallback(void* payload)
 		timer->timerUUID = this->addTimer(timer, TIMEAFTER);
 		timer->packet = this->clonePacket(packet);
 		this->sendPacket("IPv4", packet);
-	}
-	else {
-//		for (std::list<struct buf_elem*>::iterator it=socket->write_buf.begin(); it!=socket->write_buf.end(); ++it) {
-//			if ((*it)->timer->timerUUID == timer->timerUUID) {
-//				timer->timerUUID = this->addTimer(timer, 100000000);
-//				timer->packet = this->clonePacket(packet);
-//				this->sendPacket("IPv4", packet);
-//				break;
-//			}
-//		}
 	}
 }
 
