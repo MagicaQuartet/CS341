@@ -81,6 +81,11 @@ struct socket_info {
 
 	struct timer_info* handshake_timer;
 	Packet *FIN_packet;
+
+	int slow_start;
+	int cwnd;
+	int acked_bytes;
+	int ssthresh;
 };
 
 struct connection_info {

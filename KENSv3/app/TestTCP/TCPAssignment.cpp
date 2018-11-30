@@ -15,9 +15,10 @@
 #include <utility>
 #include "TCPAssignment.hpp"
 
-#define BUFFERSIZE 51200
-#define WINDOWSIZE 51200
-#define TIMEAFTER 100000000
+#define MSS				 	512
+#define BUFFERSIZE 	51200
+#define WINDOWSIZE 	51200
+#define TIMEAFTER 	100000000
 
 #define FIN 0x01
 #define SYN 0x02
@@ -197,6 +198,11 @@ int TCPAssignment::syscall_socket(int pid) {
 	sock->handshake_timer = NULL;
 	sock->FIN_packet = NULL;
 
+	sock->slow_start = 1;
+	sock->cwnd = MSS;
+	sock->acked_bytes = 0;
+	sock->ssthresh = BUFFERSIZE;
+
 	return fd;
 }
 
@@ -322,6 +328,7 @@ void TCPAssignment::syscall_read(UUID syscallUUID, int pid, int fd, void *buf, i
 				memcpy(buf+total_read_bytes, elem->data, read_bytes);
 				sock->read_buf_size -= read_bytes;
 				total_read_bytes += read_bytes;
+
 				remainder -= read_bytes;
 
 				if (read_bytes < elem->size) {
@@ -373,6 +380,7 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 		}
 	}
 
+
 	if (sock == NULL) {
 		for (std::list<struct socket_info*>::iterator it=this->connect_socket_list.begin(); it!=this->connect_socket_list.end(); ++it) {
 			if ((*it)->fd == fd && (*it)->pid == pid) {
@@ -386,7 +394,7 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 		int written_bytes = 0;																						// written_bytes: the amount of data already written
 		
 		while (written_bytes < size) {
-			int writable = BUFFERSIZE - sock->write_buf_size;
+			int writable = sock->cwnd - sock->write_buf_size;
 			struct buf_elem* elem = new buf_elem;
 			elem->syscallUUID = syscallUUID;
 
@@ -605,6 +613,11 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 
 		new_socket->handshake_timer = NULL;
 		new_socket->FIN_packet = NULL;
+		
+		new_socket->slow_start = 1;
+		new_socket->cwnd = MSS;
+		new_socket->acked_bytes = 0;
+		new_socket->ssthresh = BUFFERSIZE;
 
 		this->connect_socket_list.push_back(new_socket);
 
@@ -1082,7 +1095,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			
 			if (connect_socket->state == ST_ESTABLISHED) {												// data transmission step
 				if (ntohs(*(uint16_t*)length) == 40) {															// ACK - response of data transfer
-
 					if (connect_socket->write_history.empty())
 						return;
 					std::list<struct buf_elem*>::iterator it;
@@ -1096,11 +1108,24 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 					if (connect_socket->last_acknum_cnt < 3) {												// no fast retransmit
 						for (it=connect_socket->write_buf.begin(); it!=connect_socket->write_buf.end(); ++it) {			// remove data that the peer received from buffer
-							if ((*it)->seqnum + (*it)->size < (int)ntohl(acknum)) {																		// ... and adjust current data size in buffer
+							if ((*it)->seqnum + (*it)->size <= (int)ntohl(acknum)) {																		// ... and adjust current data size in buffer
 								connect_socket->write_buf_size -= (*it)->size;
+								connect_socket->acked_bytes += (*it)->size;
 							}
 							else
 								break;
+						}
+
+						if (connect_socket->acked_bytes >= connect_socket->cwnd) {
+							connect_socket->acked_bytes = 0;
+							if (connect_socket->slow_start) {
+								connect_socket->cwnd *= 2;
+								if (connect_socket->cwnd > connect_socket->ssthresh)
+									connect_socket->slow_start = 0;
+							}
+							else {
+								connect_socket->cwnd += MSS;
+							}
 						}
 
 						connect_socket->write_buf.erase(connect_socket->write_buf.begin(), it);
@@ -1122,7 +1147,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 								struct buf_elem* elem = new buf_elem;
 								struct timer_info* timer = new timer_info;
 								struct packet_info* pinfo = new packet_info;
-								int writable = BUFFERSIZE - connect_socket->write_buf_size;
+								int writable = connect_socket->cwnd - connect_socket->write_buf_size;
 								int write_bytes = writable >= connect_socket->write_blocked->size ? connect_socket->write_blocked->size : writable;
 
 								if (writable <= 0)
@@ -1178,6 +1203,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					else {			// fast retransmit
 						struct timer_info *timer = connect_socket->write_history.front()->timer;
 						Packet *packet = timer->packet;
+						
+						connect_socket->cwnd = connect_socket->cwnd / 2;
+						connect_socket->acked_bytes = 0;
+						connect_socket->ssthresh = connect_socket->cwnd;
 
 						this->cancelTimer(timer->timerUUID);
 						timer->timerUUID = this->addTimer(timer, TIMEAFTER);
@@ -1362,12 +1391,25 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				
 				if (normal_socket->last_acknum_cnt < 3) {
 					for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {		// remove data that the peer received from buffer
-						if ((*it)->seqnum + (*it)->size < (int)ntohl(acknum)) {																		// ... and adjust current data size in buffer
+						if ((*it)->seqnum + (*it)->size <= (int)ntohl(acknum)) {																		// ... and adjust current data size in buffer
 //							this->cancelTimer((*it)->timer->timerUUID);
 							normal_socket->write_buf_size -= (*it)->size;
+							normal_socket->acked_bytes += (*it)->size;
 						}
 						else
 							break;
+					}
+
+					if (normal_socket->acked_bytes >= normal_socket->cwnd) {
+						normal_socket->acked_bytes = 0;
+						if (normal_socket->slow_start) {
+							normal_socket->cwnd *= 2;
+							if (normal_socket->cwnd > normal_socket->ssthresh)
+								normal_socket->slow_start = 0;
+						}
+						else {
+							normal_socket->cwnd += MSS;
+						}
 					}
 
 					normal_socket->write_buf.erase(normal_socket->write_buf.begin(), it);
@@ -1390,7 +1432,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							struct timer_info* timer = new timer_info;
 							struct packet_info* pinfo = new packet_info;
 							uint8_t length[2];
-							int writable = BUFFERSIZE - normal_socket->write_buf_size;
+							int writable = normal_socket->cwnd - normal_socket->write_buf_size;
 							int write_bytes = writable >= normal_socket->write_blocked->size ? normal_socket->write_blocked->size : writable;
 							write_bytes = 512 > write_bytes ? write_bytes : 512;
 					
@@ -1447,6 +1489,10 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				else {
 					struct timer_info *timer = normal_socket->write_history.front()->timer;
 					Packet *packet = timer->packet;
+
+					normal_socket->cwnd = normal_socket->cwnd / 2;
+					normal_socket->acked_bytes = 0;
+					normal_socket->ssthresh = normal_socket->cwnd;
 
 					this->cancelTimer(timer->timerUUID);
 					timer->timerUUID = this->addTimer(timer, TIMEAFTER);
@@ -1748,6 +1794,11 @@ void TCPAssignment::timerCallback(void* payload)
 		timer->packet = this->clonePacket(packet);
 		this->sendPacket("IPv4", packet);
 	}
+//	else {
+//		socket->ssthresh = socket->cwnd / 2;
+//		socket->cwnd = MSS;
+//		socket->slow_start = 1;
+//	}
 }
 
 
