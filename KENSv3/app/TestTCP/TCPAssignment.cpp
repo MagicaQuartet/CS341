@@ -18,7 +18,10 @@
 #define MSS				 	512
 #define BUFFERSIZE 	51200
 #define WINDOWSIZE 	51200
-#define TIMEAFTER 	100000000
+
+#define K			4
+#define ALPHA	0.125
+#define BETA	0.25
 
 #define FIN 0x01
 #define SYN 0x02
@@ -56,6 +59,19 @@ void TCPAssignment::finalize()
 }
 
 /* helper functions */
+
+void updateRTO(struct socket_info* sock, Time interval) {
+	int diff = sock->SRTT - interval;
+	if (diff < 0)
+		diff *= -1;
+
+	sock->RTTVAR = (1 - BETA)*sock->RTTVAR + BETA*diff;
+	sock->SRTT = (1 - ALPHA)*sock->SRTT + ALPHA*interval;
+	sock->RTO = sock->SRTT + K * sock->RTTVAR;
+
+	if (sock->RTO < 1000000000)
+		sock->RTO = 1000000000;
+}
 
 // make a checksum with given TCP header, data, source ip and destination ip
 uint16_t makeChecksum(uint8_t *TCPHeader, uint8_t* buf, int bufsize, uint8_t *src_ip, uint8_t *dest_ip) {
@@ -202,6 +218,11 @@ int TCPAssignment::syscall_socket(int pid) {
 	sock->cwnd = MSS;
 	sock->acked_bytes = 0;
 	sock->ssthresh = BUFFERSIZE;
+
+	sock->RTT = 100000000;
+	sock->SRTT = sock->RTT;
+	sock->RTTVAR = sock->RTT / 2;
+	sock->RTO = sock->SRTT + K*sock->RTTVAR;
 
 	return fd;
 }
@@ -435,7 +456,8 @@ void TCPAssignment::syscall_write(UUID syscallUUID, int pid, int fd, void *buf, 
 				pinfo->seqnum = sock->parent->seqnum[std::make_pair(sock->dest_ip, sock->dest_port)];
 				pinfo->size = write_bytes;
 				
-				timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+				timer->timerUUID = this->addTimer(timer, sock->RTO);
+				timer->start = this->getHost()->getSystem()->getCurrentTime();
 				timer->socket = sock;
 				timer->packet = this->clonePacket(packet);
 				pinfo->timer = timer;
@@ -523,7 +545,8 @@ void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int fd, struct so
 		
 		packet->writeData(14+20, TCPHeader, 20);
 
-		timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+		timer->timerUUID = this->addTimer(timer, sock->RTO);
+		timer->start = this->getHost()->getSystem()->getCurrentTime();
 		timer->socket = sock;
 		timer->packet = this->clonePacket(packet);
 		sock->handshake_timer = timer;
@@ -618,6 +641,11 @@ void TCPAssignment::syscall_accept(UUID syscallUUID, int pid, int fd, struct soc
 		new_socket->cwnd = MSS;
 		new_socket->acked_bytes = 0;
 		new_socket->ssthresh = BUFFERSIZE;
+
+		new_socket->RTT = 100000000;
+		new_socket->SRTT = new_socket->RTT;
+		new_socket->RTTVAR = new_socket->RTT / 2;
+		new_socket->RTO = new_socket->SRTT + K*new_socket->RTTVAR;
 
 		this->connect_socket_list.push_back(new_socket);
 
@@ -930,7 +958,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	
 						new_packet->writeData(14+20, TCPHeader, 20);
 
-						timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+						timer->timerUUID = this->addTimer(timer, sock->RTO);
+						timer->start = this->getHost()->getSystem()->getCurrentTime();
 						timer->socket = sock;
 						timer->packet = this->clonePacket(new_packet);
 						sock->handshake_timer = timer;
@@ -941,6 +970,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 			else if (sock->state == ST_SYN_SENT) {	// simultaneous open
 				if (sock->handshake_timer != NULL) {
+					Time current_time = this->getHost()->getSystem()->getCurrentTime();
+					updateRTO(sock, current_time - sock->handshake_timer->start);
 					this->cancelTimer(sock->handshake_timer->timerUUID);
 					sock->handshake_timer = NULL;
 				}
@@ -974,7 +1005,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 	
 				new_packet->writeData(14+20, TCPHeader, 20);
 				
-				timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+				timer->timerUUID = this->addTimer(timer, sock->RTO);
+				timer->start = this->getHost()->getSystem()->getCurrentTime();
 				timer->socket = sock;
 				timer->packet = this->clonePacket(new_packet);
 				sock->handshake_timer = timer;
@@ -1005,6 +1037,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 		if (sock != NULL) {									// the first SYNACK
 			sock->state = ST_ESTABLISHED;
 			if (sock->handshake_timer != NULL) {
+				Time current_time = this->getHost()->getSystem()->getCurrentTime();
+				updateRTO(sock, current_time-sock->handshake_timer->start);
 				this->cancelTimer(sock->handshake_timer->timerUUID);
 				sock->handshake_timer = NULL;
 			}
@@ -1042,6 +1076,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 			if (sock != NULL) {
 				if (sock->handshake_timer != NULL) {
+					Time current_time = this->getHost()->getSystem()->getCurrentTime();
+					updateRTO(sock, current_time-sock->handshake_timer->start);
 					this->cancelTimer(sock->handshake_timer->timerUUID);
 					sock->handshake_timer = NULL;
 				}
@@ -1133,6 +1169,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						while (!connect_socket->write_history.empty()) {																						// remove information of ACKed packet
 							struct packet_info* pinfo = connect_socket->write_history.front();
 							if (pinfo->seqnum < (int)ntohl(acknum)) {
+								Time current_time = this->getHost()->getSystem()->getCurrentTime();
+								updateRTO(connect_socket, current_time-pinfo->timer->start);
 								this->cancelTimer(pinfo->timer->timerUUID);
 								connect_socket->write_history.pop_front();
 							}
@@ -1180,7 +1218,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 								pinfo->seqnum = connect_socket->parent->seqnum[std::make_pair(connect_socket->dest_ip, connect_socket->dest_port)];
 								pinfo->size = write_bytes;
 		
-								timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+								timer->timerUUID = this->addTimer(timer, connect_socket->RTO);
+								timer->start = this->getHost()->getSystem()->getCurrentTime();
 								timer->socket = connect_socket;
 								timer->packet = this->clonePacket(new_packet);
 								pinfo->timer = timer;
@@ -1201,17 +1240,24 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 						}
 					}
 					else {			// fast retransmit
-						struct timer_info *timer = connect_socket->write_history.front()->timer;
-						Packet *packet = timer->packet;
-						
+						for (std::list<struct packet_info*>::iterator it=connect_socket->write_history.begin(); it!=connect_socket->write_history.end(); ++it) {
+							struct timer_info *timer = (*it)->timer;
+							Packet *packet = timer->packet;
+
+							Time current_time = this->getHost()->getSystem()->getCurrentTime();
+							updateRTO(connect_socket, current_time-timer->start);
+							this->cancelTimer(timer->timerUUID);
+
+
+							timer->timerUUID = this->addTimer(timer, connect_socket->RTO);
+							timer->start = this->getHost()->getSystem()->getCurrentTime();
+							timer->packet = this->clonePacket(packet);
+							this->sendPacket("IPv4", packet);
+						}
+
 						connect_socket->cwnd = connect_socket->cwnd / 2;
 						connect_socket->acked_bytes = 0;
 						connect_socket->ssthresh = connect_socket->cwnd;
-
-						this->cancelTimer(timer->timerUUID);
-						timer->timerUUID = this->addTimer(timer, TIMEAFTER);
-						timer->packet = this->clonePacket(packet);
-						this->sendPacket("IPv4", packet);
 					}
 
 					if (connect_socket->write_history.empty() && connect_socket->FIN_packet != NULL) {
@@ -1333,6 +1379,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 			}
 
 			if (normal_socket->handshake_timer != NULL) {
+				Time current_time = this->getHost()->getSystem()->getCurrentTime();
+				updateRTO(normal_socket, current_time-normal_socket->handshake_timer->start);
 				this->cancelTimer(normal_socket->handshake_timer->timerUUID);
 				normal_socket->handshake_timer = NULL;
 			}
@@ -1392,7 +1440,6 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 				if (normal_socket->last_acknum_cnt < 3) {
 					for (it=normal_socket->write_buf.begin(); it!=normal_socket->write_buf.end(); ++it) {		// remove data that the peer received from buffer
 						if ((*it)->seqnum + (*it)->size <= (int)ntohl(acknum)) {																		// ... and adjust current data size in buffer
-//							this->cancelTimer((*it)->timer->timerUUID);
 							normal_socket->write_buf_size -= (*it)->size;
 							normal_socket->acked_bytes += (*it)->size;
 						}
@@ -1417,6 +1464,8 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					while (!normal_socket->write_history.empty()) {
 						struct packet_info* pinfo = normal_socket->write_history.front();
 						if (pinfo->seqnum < (int)ntohl(acknum)) {
+							Time current_time = this->getHost()->getSystem()->getCurrentTime();
+							updateRTO(normal_socket, current_time-pinfo->timer->start);
 							this->cancelTimer(pinfo->timer->timerUUID);
 							normal_socket->write_history.pop_front();
 						}
@@ -1467,7 +1516,7 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 							pinfo->seqnum = normal_socket->parent->seqnum[std::make_pair(normal_socket->dest_ip, normal_socket->dest_port)];
 							pinfo->size = write_bytes;
 
-							timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+							timer->timerUUID = this->addTimer(timer, normal_socket->RTO);
 							timer->socket = normal_socket;
 							timer->packet = this->clonePacket(new_packet);
 							pinfo->timer = timer;
@@ -1487,17 +1536,23 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 					}
 				}
 				else {
-					struct timer_info *timer = normal_socket->write_history.front()->timer;
-					Packet *packet = timer->packet;
+					for (std::list<struct packet_info*>::iterator it=normal_socket->write_history.begin(); it!=normal_socket->write_history.end(); ++it) {
+						struct timer_info *timer = (*it)->timer;
+						Packet *packet = timer->packet;
+
+						Time current_time = this->getHost()->getSystem()->getCurrentTime();
+						updateRTO(normal_socket, current_time-timer->start);
+						this->cancelTimer(timer->timerUUID);
+
+						timer->timerUUID = this->addTimer(timer, normal_socket->RTO);
+						timer->start = this->getHost()->getSystem()->getCurrentTime();
+						timer->packet = this->clonePacket(packet);
+						this->sendPacket("IPv4", packet);
+					}
 
 					normal_socket->cwnd = normal_socket->cwnd / 2;
 					normal_socket->acked_bytes = 0;
 					normal_socket->ssthresh = normal_socket->cwnd;
-
-					this->cancelTimer(timer->timerUUID);
-					timer->timerUUID = this->addTimer(timer, TIMEAFTER);
-					timer->packet = this->clonePacket(packet);
-					this->sendPacket("IPv4", packet);
 				}
 
 				if (normal_socket->write_history.empty() && normal_socket->FIN_packet != NULL) {		// check postponed FIN
@@ -1790,7 +1845,8 @@ void TCPAssignment::timerCallback(void* payload)
 	Packet *packet = (Packet *)timer->packet;
 
 	if (socket->handshake_timer != NULL) {
-		timer->timerUUID = this->addTimer(timer, TIMEAFTER);
+		timer->timerUUID = this->addTimer(timer, socket->RTO);
+		timer->start = this->getHost()->getSystem()->getCurrentTime();
 		timer->packet = this->clonePacket(packet);
 		this->sendPacket("IPv4", packet);
 	}

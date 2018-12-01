@@ -24,6 +24,7 @@ namespace E
 
 struct timer_info {
 	UUID timerUUID;
+	Time start;
 	void *socket;
 	Packet *packet;
 };
@@ -86,6 +87,11 @@ struct socket_info {
 	int cwnd;
 	int acked_bytes;
 	int ssthresh;
+
+	int RTT;
+	int SRTT;
+	int RTTVAR;
+	int RTO;
 };
 
 struct connection_info {
